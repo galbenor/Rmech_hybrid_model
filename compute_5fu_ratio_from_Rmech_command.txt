@@ -9,3 +9,15 @@ for R in [0.0, 0.3, 0.7, 1.0, 1.4, 1.7, 1.9]:
     r = run_thompson_sampling(12, 8, mu, R, n_patients=3000, seed=42)
     print(f'{R:>8.2f} {r:>10.4f} {baseline/r:>7.2f}x')
 "
+
+
+
+results:
+ R_mech     regret    ratio
+    0.00     7.7777    1.00x
+    0.30     7.3213    1.06x
+    0.70     6.2837    1.24x
+    1.00     5.4240    1.43x
+    1.40     4.5080    1.73x
+    1.70     4.0080    1.94x
+    1.90     3.5703    2.18x
