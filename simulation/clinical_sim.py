@@ -36,7 +36,7 @@ def simulate_patient():
     sigma_auc = 5.0   # mg·h/L (20% of 25 mg·h/L)
     def p_hit(dose):
         """P(AUC in target | dose, CL) averaged over intra-patient noise."""
-        auc_mean = dose / cl * 25.0   # scaled so median CL → AUC = dose/96*25
+        auc_mean = dose / cl   # AUC = Dose / CL (mg·h/L)
         # P(target lo < N(auc_mean, sigma_auc) < target hi)
         from scipy.stats import norm
         return norm.cdf(TARGET_HI, auc_mean, sigma_auc) - \
@@ -48,7 +48,7 @@ def simulate_patient():
 def optimal_dose_ode(cl_est, noise_frac=0.22):
     """ODE recommendation: best dose under noisy clearance estimate."""
     cl_noisy = cl_est * np.exp(rng.normal(0, noise_frac))
-    auc_est = np.array([d / cl_noisy * 25.0 for d in DOSE_LEVELS])
+    auc_est = np.array([d / cl_noisy for d in DOSE_LEVELS])
     # score: negative squared distance from target midpoint (25 mg·h/L)
     score = -(auc_est - 25.0)**2
     return int(np.argmax(score))
@@ -97,13 +97,15 @@ def run_trial(N_cycles, patient_probs, algorithm, pihat=None, rmech=1.9):
         regrets.append(total_regret)
     return np.array(regrets)
 
-# ── Main simulation ─────────────────────────────────────────────────────
-N_PATIENTS = 5000
-N_CYCLES   = 50
-RMECH      = 1.9
+if __name__ == "__main__":
+    # ── Main simulation ─────────────────────────────────────────────────
+    import os
+    N_PATIENTS = 5000
+    N_CYCLES   = 50
+    RMECH      = 1.9
 
-results = {a: np.zeros((N_PATIENTS, N_CYCLES))
-           for a in ['bsa', 'uninformed_ts', 'ts_hyb']}
+    results = {a: np.zeros((N_PATIENTS, N_CYCLES))
+               for a in ['bsa', 'uninformed_ts', 'ts_hyb']}
 target_achieved_by_cycle = {a: np.zeros((N_PATIENTS, N_CYCLES))
                              for a in ['uninformed_ts', 'ts_hyb']}
 first_target_cycle = {a: np.full(N_PATIENTS, N_CYCLES+1, dtype=float)
