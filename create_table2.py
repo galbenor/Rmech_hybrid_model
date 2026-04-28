@@ -143,6 +143,7 @@ TARGET_HI     = 30.0
 TARGET_MID    = 25.0
 DOSE_MIN      = 1600.0
 DOSE_MAX      = 3600.0
+RMECH         = 0.37  # TODO: CHANGE HERE IF DESIRED (1.9 / 0.37...)
 
 
 def reward_prob_at_distance(d_steps: int, K: int) -> float:
@@ -225,14 +226,14 @@ def print_running_examples():
     C022 = channel_capacity_C(B_mu, sigma, kappa, sigma_F, d_F)
     B_crit_corr = B_crit_corrected(sigma, kappa, H_mu, d_F)
     B_crit_oldapprox = (sigma / kappa) * np.sqrt(H_mu - 1.0)
-    H_hyb_19 = H_mu_hyb_exact(1.9, K_re)
+    H_hyb = H_mu_hyb_exact(RMECH, K_re)
 
     print(f"  Inputs: K={K_re}, B_mu={B_mu}, sigma={sigma}, kappa={kappa}, d_F={d_F}")
     print(f"  H(mu) = ln(K) = {H_mu:.4f} nats")
     print(f"  sigma_F^2 = 2*s^2*H/(k^2*d_F) = {sigma_F_sq:.5f}, sigma_F = {sigma_F:.4f}")
     print()
     print(f"  Channel capacity C({B_mu}) = {C022:.4f} nats   (paper says 0.37)  [Eq. 4]")
-    print(f"  H(mu_hyb at R=1.9) = {H_hyb_19:.4f} nats        (paper says 1.69)  [Eq. 8]")
+    print(f"  H(mu_hyb at R={RMECH}) = {H_hyb:.4f} nats        (paper says 1.69)  [Eq. 8]")
     print()
     print(f"  B_crit (corrected, Eq. 10):                  = {B_crit_corr:.4f}")
     print(f"  B_crit (small-SNR approximation, hybrid_lb):  = {B_crit_oldapprox:.4f}  (paper Ex. 5: 0.115)")
@@ -265,14 +266,14 @@ def print_phase1_table1():
 def print_phase1_table2():
     print()
     print("=" * 88)
-    print(f"PHASE 1, Table 2 (paper-aligned, varying N at R_mech = 1.9)")
+    print(f"PHASE 1, Table 2 (paper-aligned, varying N at R_mech = {RMECH})")
     print("=" * 88)
     hdr = "{:>6} {:>16} {:>16} {:>12} {:>24}".format(
         "N", "TS_hyb", "Uninf_TS", "Obs/UnInf", "Regime")
     print(hdr); print("-" * 88)
     for N in N_VALUES_TABLE2:
         bm, bs = run_phase1(K, N, M, 0.0, SEED + N)
-        hm, hs = run_phase1(K, N, M, 1.9, SEED + N)
+        hm, hs = run_phase1(K, N, M, RMECH, SEED + N)
         obs = bm / hm if hm > 1e-9 else float("inf")
         if N <= 30: reg = "burn-in dominated"
         elif N <= 100: reg = "transitional"
@@ -332,14 +333,14 @@ def print_phase2_table1():
 def print_phase2_table2():
     print()
     print("=" * 88)
-    print(f"PHASE 2, Table 2 (literature-calibrated, varying N at R_mech = 1.9)")
+    print(f"PHASE 2, Table 2 (literature-calibrated, varying N at R_mech = {RMECH})")
     print("=" * 88)
     hdr = "{:>6} {:>16} {:>16} {:>12} {:>24}".format(
         "N", "TS_hyb", "Uninf_TS", "Obs/UnInf", "Regime")
     print(hdr); print("-" * 88)
     for N in N_VALUES_TABLE2:
         bm, bs = run_phase2(K, N, M, 0.0, SEED + N)
-        hm, hs = run_phase2(K, N, M, 1.9, SEED + N)
+        hm, hs = run_phase2(K, N, M, RMECH , SEED + N)
         obs = bm / hm if hm > 1e-9 else float("inf")
         if N <= 30: reg = "burn-in dominated"
         elif N <= 100: reg = "transitional"
