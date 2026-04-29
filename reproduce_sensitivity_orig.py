@@ -199,120 +199,25 @@ def sample_pi_hat(pi_star: int, q: float, K: int, rng) -> int:
 # ============================================================================
 
 def ts_one_patient(K, N, R_mech, q, p_by_distance, rng,
-                    prior_type="mu_hyb_exact", regret_type="bayesian",
-                    pi_star_distribution="uniform",
-                    reward_model="literature"):
+                    prior_type="mu_hyb_exact", regret_type="bayesian"):
     """
-    One patient simulator, fully configurable.
+    One patient, configurable by prior_type and regret_type.
 
-    --------------------------------------------------------------------
-    reward_model: how is the per-round reward generated?
-    --------------------------------------------------------------------
-    "literature" (default, our setup, Kaldate-calibrated):
-        Bernoulli(p_arms[arm]) where p_arm depends on dose-step distance:
-            p(d=0) = 0.6925  (optimal arm, in-window with realistic prob)
-            p(d=1) = 0.4145
-            p(d=2) = 0.0827
-            ...
-        Models real PK variability: even the optimal arm misses the
-        therapeutic window ~30% of the time due to intra-patient
-        variability (Kaldate sigma_intra).
-        Realistic but produces SMALLER observed ratios because reward
-        signal is weaker.
-
-    "stylized" (paper's setup, near-deterministic):
-        Bernoulli(1.0) if arm == pi*, else Bernoulli(0.0).
-        Reward is exactly 1 iff the arm matches pi* (no Kaldate noise).
-        This is what gives the paper's uninformed_regret(N=12) ≈ 9.67
-        and the headline 30x ratios. It assumes a perfectly identified
-        therapeutic window; in reality the AUC fluctuates around its
-        mean even at the optimal dose.
-        Used in the paper's Tables 1, 2.  ** Reproduces published numbers. **
-
-    --------------------------------------------------------------------
-    pi_star_distribution: how is pi* (true optimal arm) drawn?
-    --------------------------------------------------------------------
-    "uniform" (default, our setup):
-        pi* ~ Uniform(K). pi_hat is then drawn from a symmetric channel
-        with I(pi*; pi_hat) = R_mech EXACTLY. This gives a "population-
-        marginal" evaluation: patients are spread across the dose grid,
-        and the ODE provides R_mech nats of correlated info per patient.
-        ** This is the clinically grounded setup. **
-
-    "mu_hyb" (paper's setup, Section 5.1 line 268):
-        pi_hat ~ Uniform(K), then pi* ~ mu_hyb(·|pi_hat) with tilt R_mech.
-        Mathematically: P(pi* = pi_hat) = e^R/(e^R + K - 1) = mu_hyb(pi_hat),
-        and P(pi* = j ≠ pi_hat) = 1/(e^R + K - 1).
-        This makes pi* concentrated around pi_hat at the same level the
-        algorithm's prior is concentrated. The actual mutual information
-        is I(pi*; pi_hat) = log K - H(mu_hyb), NOT R_mech (these only
-        coincide as K → infinity).
-        ** This is a "Bayesian self-consistency" setup — verifies that
-           the bound is tight when the prior matches the data-generating
-           distribution.  Produces dramatically larger empirical ratios
-           because the algorithm's prior literally generates the data. **
-
-    --------------------------------------------------------------------
-    prior_type: how is the algorithm's prior tilt set?
-    --------------------------------------------------------------------
-    "mu_hyb_exact" (default, paper Thm 2):
-        alpha[pi_hat] = exp(R_mech), giving algorithm prior = mu_hyb.
-    "audit_code" (historical):
-        alpha[pi_hat] = 1 + R_mech * K, more concentrated at moderate R.
-
-    --------------------------------------------------------------------
-    regret_type: which regret metric?
-    --------------------------------------------------------------------
-    "bayesian" (default, paper Def 1):
-        cum_regret += p_opt - p_arms[arm]   (mean-reward gap)
-    "sample" (observed):
-        cum_regret += (1 - realized_reward)
+    prior_type:
+        "mu_hyb_exact"  ->  alpha[pi_hat] = exp(R_mech)             [paper Thm 2]
+        "audit_code"    ->  alpha[pi_hat] = 1 + R_mech * K          [historical]
+    regret_type:
+        "bayesian"  ->  cum_regret += p_opt - p_arms[arm]            [paper Def 1]
+        "sample"    ->  cum_regret += (1 - realized_reward)          [observed]
     """
-    # ----- Step 1: draw pi* and pi_hat per the chosen distribution -----
-    if pi_star_distribution == "uniform":
-        # Our setup: pi* uniform, pi_hat from symmetric channel with MI=R_mech
-        pi_star = int(rng.integers(0, K))
-        if R_mech > 0.0:
-            pi_hat = sample_pi_hat(pi_star, q, K, rng)
-        else:
-            pi_hat = int(rng.integers(0, K))   # uninformative ODE: random
-    elif pi_star_distribution == "mu_hyb":
-        # Paper's setup: pi_hat uniform, pi* drawn from mu_hyb(·|pi_hat)
-        pi_hat = int(rng.integers(0, K))
-        if R_mech > 0.0:
-            # P(pi* = pi_hat) = e^R / (e^R + K - 1)
-            p_match = np.exp(R_mech) / (np.exp(R_mech) + K - 1)
-            if rng.random() < p_match:
-                pi_star = pi_hat
-            else:
-                # Uniform on the other K-1 arms
-                others = [k for k in range(K) if k != pi_hat]
-                pi_star = int(rng.choice(others))
-        else:
-            pi_star = int(rng.integers(0, K))
-    else:
-        raise ValueError(f"Unknown pi_star_distribution: {pi_star_distribution}")
-
+    pi_star = int(rng.integers(0, K))
     p_arms  = np.array([p_by_distance[abs(k - pi_star)] for k in range(K)])
     p_opt   = p_arms[pi_star]
 
-    # ----- Step 1b: select reward parameters per the chosen reward model -----
-    if reward_model == "literature":
-        # Bernoulli with Kaldate-calibrated probs (p_arms above is correct)
-        p_arms_used = p_arms
-        p_opt_used = p_opt
-    elif reward_model == "stylized":
-        # Near-deterministic indicator: 1 iff arm == pi*, else 0
-        p_arms_used = np.zeros(K, dtype=float)
-        p_arms_used[pi_star] = 1.0
-        p_opt_used = 1.0
-    else:
-        raise ValueError(f"Unknown reward_model: {reward_model}")
-
-    # ----- Step 2: set the algorithm's prior -----
     alpha = np.ones(K, dtype=float)
     beta_ = np.ones(K, dtype=float)
     if R_mech > 0.0:
+        pi_hat = sample_pi_hat(pi_star, q, K, rng)
         if prior_type == "mu_hyb_exact":
             alpha[pi_hat] = np.exp(R_mech)
         elif prior_type == "audit_code":
@@ -320,14 +225,13 @@ def ts_one_patient(K, N, R_mech, q, p_by_distance, rng,
         else:
             raise ValueError(f"Unknown prior_type: {prior_type}")
 
-    # ----- Step 3: run TS for N rounds -----
     cum_regret = 0.0
     for _ in range(N):
         theta = rng.beta(alpha, beta_)
         arm = int(np.argmax(theta))
-        reward = 1.0 if rng.random() < p_arms_used[arm] else 0.0
+        reward = 1.0 if rng.random() < p_arms[arm] else 0.0
         if regret_type == "bayesian":
-            cum_regret += p_opt_used - p_arms_used[arm]
+            cum_regret += p_opt - p_arms[arm]
         elif regret_type == "sample":
             cum_regret += 1.0 - reward
         else:
@@ -338,14 +242,9 @@ def ts_one_patient(K, N, R_mech, q, p_by_distance, rng,
 
 
 def run_simulation(K, N, M, R_mech, seed,
-                    prior_type="mu_hyb_exact", regret_type="bayesian",
-                    pi_star_distribution="uniform",
-                    reward_model="literature"):
+                    prior_type="mu_hyb_exact", regret_type="bayesian"):
     """
     Run M independent patients, return (mean regret, standard error of mean).
-
-    See ts_one_patient docstring for the meaning of pi_star_distribution
-    and reward_model.
     """
     rng = np.random.default_rng(seed)
     q = accuracy_for_target_mi(R_mech, K)
@@ -353,9 +252,7 @@ def run_simulation(K, N, M, R_mech, seed,
     regrets = np.empty(M)
     for i in range(M):
         regrets[i] = ts_one_patient(K, N, R_mech, q, p_by_distance, rng,
-                                      prior_type, regret_type,
-                                      pi_star_distribution,
-                                      reward_model)
+                                      prior_type, regret_type)
     return regrets.mean(), regrets.std(ddof=1) / np.sqrt(M)
 
 
@@ -388,44 +285,24 @@ def print_running_examples(K, B_mu, sigma, kappa, d_F, R_mech_anchor):
     print("   [baseline regime]" if ratio > 1.0 else "   [data-efficient regime]")
 
 
-def print_table1(K, N, M, seed, R_mech_values, prior_type, regret_type,
-                  pi_star_distribution="uniform", reward_model="literature"):
+def print_table1(K, N, M, seed, R_mech_values, prior_type, regret_type):
     """Table 1 — sweep over R_mech at fixed N."""
-    pi_label = (
-        "pi* ~ Uniform"
-        if pi_star_distribution == "uniform"
-        else "pi* ~ mu_hyb"
-    )
-    rew_label = (
-        "Bernoulli with Kaldate-calibrated probabilities"
-        if reward_model == "literature"
-        else "stylized 0/1 indicator (paper)"
-    )
-    setup_label = (
-        ("POPULATION-MARGINAL (clinically grounded)"
-         if pi_star_distribution == "uniform"
-         else "BAYESIAN-SELF-CONSISTENCY (paper Section 5.1)")
-        + " | reward = " + rew_label
-    )
-    print("\n" + "=" * 115)
+    print("\n" + "=" * 110)
     print(f"TABLE 1 — sweep over R_mech at N={N}")
-    print(f"   {setup_label}")
-    print(f"   pi*: {pi_label}, reward: {reward_model}, prior='{prior_type}', regret='{regret_type}', K={K}, M={M}")
-    print("=" * 115)
+    print(f"   K={K}, M={M}, prior='{prior_type}', regret='{regret_type}'")
+    print("=" * 110)
     log_K = np.log(K)
     print("{:>8} {:>8} {:>10} {:>16} {:>16} {:>10} {:>10}".format(
         "R_mech", "H_mech", "H(mu_hyb)", "Hyb regret", "Uninf regret",
         "Obs ratio", "LB pred"))
-    print("-" * 115)
+    print("-" * 110)
     base_mean, base_se = run_simulation(K, N, M, 0.0, seed,
-                                          prior_type, regret_type,
-                                          pi_star_distribution, reward_model)
+                                          prior_type, regret_type)
     for R in R_mech_values:
         H_mech = max(log_K - R, 1e-9)
         H_hyb = H_mu_hyb_exact(R, K)
         hyb_mean, hyb_se = run_simulation(K, N, M, R, seed,
-                                            prior_type, regret_type,
-                                            pi_star_distribution, reward_model)
+                                            prior_type, regret_type)
         obs = base_mean / hyb_mean if hyb_mean > 1e-9 else float("inf")
         LB_pred = np.sqrt(log_K / H_mech)
         print("{:>8.2f} {:>8.2f} {:>10.2f} {:>7.2f}+/-{:<6.2f} "
@@ -434,117 +311,26 @@ def print_table1(K, N, M, seed, R_mech_values, prior_type, regret_type,
                 obs, LB_pred))
 
 
-def print_table2(K, M, seed, R_mech_anchor, N_values, prior_type, regret_type,
-                  pi_star_distribution="uniform", reward_model="literature"):
+def print_table2(K, M, seed, R_mech_anchor, N_values, prior_type, regret_type):
     """Table 2 — sweep over N at fixed R_mech."""
-    pi_label = (
-        "pi* ~ Uniform"
-        if pi_star_distribution == "uniform"
-        else "pi* ~ mu_hyb"
-    )
-    rew_label = (
-        "Bernoulli with Kaldate-calibrated probabilities"
-        if reward_model == "literature"
-        else "stylized 0/1 indicator (paper)"
-    )
-    setup_label = (
-        ("POPULATION-MARGINAL (clinically grounded)"
-         if pi_star_distribution == "uniform"
-         else "BAYESIAN-SELF-CONSISTENCY (paper Section 5.1)")
-        + " | reward = " + rew_label
-    )
-    print("\n" + "=" * 95)
+    print("\n" + "=" * 88)
     print(f"TABLE 2 — sweep over N at R_mech={R_mech_anchor}")
-    print(f"   {setup_label}")
-    print(f"   pi*: {pi_label}, reward: {reward_model}, prior='{prior_type}', regret='{regret_type}', K={K}, M={M}")
-    print("=" * 95)
+    print(f"   K={K}, M={M}, prior='{prior_type}', regret='{regret_type}'")
+    print("=" * 88)
     print("{:>6} {:>16} {:>16} {:>12} {:>20}".format(
         "N", "Hyb regret", "Uninf regret", "Obs ratio", "Regime"))
-    print("-" * 95)
+    print("-" * 88)
     for N in N_values:
         bm, bs = run_simulation(K, N, M, 0.0, seed + N,
-                                  prior_type, regret_type,
-                                  pi_star_distribution, reward_model)
+                                  prior_type, regret_type)
         hm, hs = run_simulation(K, N, M, R_mech_anchor, seed + N,
-                                  prior_type, regret_type,
-                                  pi_star_distribution, reward_model)
+                                  prior_type, regret_type)
         obs = bm / hm if hm > 1e-9 else float("inf")
         if N <= 30:    reg = "burn-in dominated"
         elif N <= 100: reg = "transitional"
         else:          reg = "asymptotic"
         print("{:>6d} {:>7.2f}+/-{:<6.2f} {:>7.2f}+/-{:<6.2f} {:>10.2f}x  {:<20}".format(
             N, hm, hs, bm, bs, obs, reg))
-
-
-def print_setup_legend():
-    """Print an explanation of the two pi* distribution and two reward setups."""
-    print("\n" + "=" * 95)
-    print("ON THE EVALUATION SETUPS — three flags, four useful combinations")
-    print("=" * 95)
-    print("""
-The simulator has three orthogonal flags. Each combination tests a different claim:
-
-  1) pi_star_distribution: how is the true optimal pi* drawn?
-     'uniform' — clinically grounded population-marginal evaluation
-     'mu_hyb'  — Bayesian self-consistency (paper Section 5.1)
-
-  2) reward_model: what reward signal does the bandit observe?
-     'literature' — Bernoulli with Kaldate-calibrated probabilities
-                    (p_opt ≈ 0.69, mean p ≈ 0.21).  Realistic PK noise.
-     'stylized'   — 0/1 indicator: r=1 iff arm == pi*, r=0 otherwise.
-                    Near-deterministic.
-
-  3) prior_type: the algorithm's prior tilt
-     'mu_hyb_exact' — alpha[pi_hat] = exp(R_mech) [paper Thm 2]
-     'audit_code'   — alpha[pi_hat] = 1 + R_mech*K [historical]
-
-THE FOUR USEFUL COMBINATIONS
------------------------------------------------------------------------------
-  (A) pi*=mu_hyb,  reward=stylized    [BAYESIAN-SELF-CONSISTENCY]
-        Most-favorable corner: pi* matches the prior, reward signal is
-        clean.  Should give the paper's biggest ratios.
-
-  (B) pi*=uniform, reward=stylized    [STYLIZED CLINICAL]
-        Population-marginal pi*, but strong reward signal.
-
-  (C) pi*=mu_hyb,  reward=literature  [REALISTIC PK + BAYESIAN pi*]
-        Realistic Bernoulli reward, but pi* drawn from prior.
-
-  (D) pi*=uniform, reward=literature  [REALISTIC CLINICAL]   ** OUR DEFAULT **
-        Both clinically grounded.  Most conservative — what a real clinic
-        would actually see.  Modest gains (1.05-1.5x at moderate R_mech)
-        that match the asymptotic LB.
-
-WHY OUR (A) DOESN'T HIT THE PAPER'S 30x
------------------------------------------------------------------------------
-The paper's Table 1 reports hyb=0.32 at R=1.9, N=12, K=8.  This implies
-P(arm == pi*) ≈ 1 - 0.32/12 ≈ 97% per round.
-
-But under prior alpha[pi_hat] = e^R = 6.7 (the 'mu_hyb_exact' prior of
-Theorem 2), the closed-form first-pick probability is e^R/(e^R+K-1) = 0.49.
-With mu_hyb-exact prior, hitting 97% per round is mathematically impossible.
-
-We cannot reproduce the paper's exact numbers with any combination of
-{pi_star_dist, reward_model, prior_type} that we have implemented.
-The published numbers may use:
-  - a much more concentrated prior than alpha=e^R, OR
-  - a non-Beta-Bernoulli sampler (e.g., Gaussian TS), OR
-  - a deterministic dose-policy that snaps to pi_hat early, OR
-  - some other non-standard convention not stated in the manuscript.
-
-What we CAN claim from our simulations:
-  - The framework's QUALITATIVE prediction holds: hyb regret strictly
-    decreases with R_mech in all four combinations.
-  - Combination (A) gives the largest ratios (~1.2x at R=1.9 with our
-    Beta-Bernoulli TS); (D) gives the smallest (~1.4x with literature
-    reward and uniform pi*, due to noise).
-  - The gap between our (A) numbers and the paper's published numbers
-    suggests the paper's simulator uses a more concentrated effective prior.
-
-  Caveat: under 'mu_hyb', the data-generating mutual information
-          I(pi*; pi_hat) = log K - H(mu_hyb), NOT R_mech itself.  At K=8,
-          R=1.9: actual MI = log(8) - 1.69 = 0.39 nats, not 1.9.
-""")
 
 
 # ============================================================================
@@ -1121,21 +907,16 @@ def print_table3_sample_density(K=K_0, kappa=KAPPA_0, d_F=D_F_0,
             R_mech_at_m = cal["C"]
             # Cycles needed for hybrid to reach target regret
             N_target = cycles_to_target(K, M, R_mech_at_m, target_avg_regret, seed,
-                                          prior_type, regret_type,
-                                          pi_star_distribution)
+                                          prior_type, regret_type)
             # Cycles needed for uninformed to reach same target (for "regret saved")
             N_uninf = cycles_to_target(K, M, 0.0, target_avg_regret, seed,
-                                          prior_type, regret_type,
-                                          pi_star_distribution)
+                                          prior_type, regret_type)
             # Total samples = cycles × m
             total_samples = N_target * m if N_target is not None else None
             # Regret savings per blood draw at N=12 (a clinical reference point)
-            base_at_12, _ = run_simulation(K, 12, M, 0.0, seed,
-                                             prior_type, regret_type,
-                                             pi_star_distribution)
+            base_at_12, _ = run_simulation(K, 12, M, 0.0, seed, prior_type, regret_type)
             hyb_at_12, _  = run_simulation(K, 12, M, R_mech_at_m, seed,
-                                              prior_type, regret_type,
-                                              pi_star_distribution)
+                                              prior_type, regret_type)
             regret_saved = max(base_at_12 - hyb_at_12, 0)
             regret_per_sample = regret_saved / (12 * m) if m > 0 else 0
             rows_for_summary.append((m, N_target, N_uninf, total_samples, regret_per_sample))
@@ -1300,7 +1081,6 @@ def plot_quantities_vs_m(K=K_0, kappa=KAPPA_0, d_F=D_F_0,
 def heatmap_regret_vs_m(N=12, K=K_0, M=200, seed=42,
                           m_grid=None, prior_type="mu_hyb_exact",
                           regret_type="bayesian",
-                          pi_star_distribution="uniform",
                           m0=M0_DEFAULT, B_mu_at_m0=B_MU_AT_M0,
                           B_inf=B_MU_FLOOR, sigma0=SIGMA_BASELINE,
                           alpha=ALPHA_INFLATION, kappa=KAPPA_0, d_F=D_F_0,
@@ -1341,8 +1121,7 @@ def heatmap_regret_vs_m(N=12, K=K_0, M=200, seed=42,
     for N in N_panels:
         # Pre-compute uninformed baseline at this N
         base_mean, _ = run_simulation(K, N, M, 0.0, seed,
-                                        prior_type, regret_type,
-                                        pi_star_distribution)
+                                        prior_type, regret_type)
         ratios = np.full((len(R_mech_grid), len(m_grid)), np.nan)
         # Each (R, m) cell: simulate at R_mech=R, but the m index just labels
         # which m's calibration corresponds to this R.  Same simulation regardless of m.
@@ -1350,8 +1129,7 @@ def heatmap_regret_vs_m(N=12, K=K_0, M=200, seed=42,
         # not what the simulator does at a fixed R_mech.
         for i, R in enumerate(R_mech_grid):
             hyb_mean, _ = run_simulation(K, N, M, float(R), seed,
-                                            prior_type, regret_type,
-                                            pi_star_distribution)
+                                            prior_type, regret_type)
             if hyb_mean > 1e-9:
                 ratios[i, :] = base_mean / hyb_mean
         all_ratios_panels.append(ratios)
@@ -1412,7 +1190,6 @@ def plot_regret_at_ceiling_vs_m(K=K_0, N_values=(5, 12, 30, 100),
                                   m_grid=None,
                                   prior_type="mu_hyb_exact",
                                   regret_type="bayesian",
-                                  pi_star_distribution="uniform",
                                   m0=M0_DEFAULT, B_mu_at_m0=B_MU_AT_M0,
                                   B_inf=B_MU_FLOOR, sigma0=SIGMA_BASELINE,
                                   alpha=ALPHA_INFLATION, kappa=KAPPA_0, d_F=D_F_0,
@@ -1442,13 +1219,10 @@ def plot_regret_at_ceiling_vs_m(K=K_0, N_values=(5, 12, 30, 100),
     for color, N in zip(colors, N_values):
         ratios = []
         regrets_saved = []
-        base_mean, _ = run_simulation(K, N, M, 0.0, seed,
-                                        prior_type, regret_type,
-                                        pi_star_distribution)
+        base_mean, _ = run_simulation(K, N, M, 0.0, seed, prior_type, regret_type)
         for m, R in zip(m_grid, R_at_m):
             hyb_mean, _ = run_simulation(K, N, M, float(R), seed,
-                                            prior_type, regret_type,
-                                            pi_star_distribution)
+                                            prior_type, regret_type)
             ratio = base_mean / hyb_mean if hyb_mean > 1e-9 else np.nan
             ratios.append(ratio)
             regrets_saved.append(max(base_mean - hyb_mean, 0))
@@ -1507,7 +1281,6 @@ def plot_regret_at_ceiling_vs_m(K=K_0, N_values=(5, 12, 30, 100),
 def plot_cycles_to_target(K=K_0, M=200, seed=42, m_grid=None,
                             target_avg_regrets=(0.15, 0.20, 0.30),
                             prior_type="mu_hyb_exact", regret_type="bayesian",
-                            pi_star_distribution="uniform",
                             m0=M0_DEFAULT, B_mu_at_m0=B_MU_AT_M0,
                             B_inf=B_MU_FLOOR, sigma0=SIGMA_BASELINE,
                             alpha=ALPHA_INFLATION, kappa=KAPPA_0, d_F=D_F_0,
@@ -1545,11 +1318,9 @@ def plot_cycles_to_target(K=K_0, M=200, seed=42, m_grid=None,
         cycles_uninf = []
         for m, R in zip(m_grid, R_at_m):
             N_hyb = cycles_to_target(K, M, float(R), float(target), seed,
-                                        prior_type, regret_type,
-                                        pi_star_distribution)
+                                        prior_type, regret_type)
             N_uninf = cycles_to_target(K, M, 0.0, float(target), seed,
-                                          prior_type, regret_type,
-                                          pi_star_distribution)
+                                          prior_type, regret_type)
             cycles_hyb.append(N_hyb if N_hyb else 200)
             cycles_uninf.append(N_uninf if N_uninf else 200)
         cycles_hyb = np.array(cycles_hyb)
@@ -1608,7 +1379,6 @@ def plot_cycles_to_target(K=K_0, M=200, seed=42, m_grid=None,
 
 def plot_pareto_frontier(K=K_0, M=200, seed=42, m_grid=None, N_grid=None,
                            prior_type="mu_hyb_exact", regret_type="bayesian",
-                           pi_star_distribution="uniform",
                            m0=M0_DEFAULT, B_mu_at_m0=B_MU_AT_M0,
                            B_inf=B_MU_FLOOR, sigma0=SIGMA_BASELINE,
                            alpha=ALPHA_INFLATION, kappa=KAPPA_0, d_F=D_F_0,
@@ -1637,8 +1407,7 @@ def plot_pareto_frontier(K=K_0, M=200, seed=42, m_grid=None, N_grid=None,
     for m, R in zip(m_grid, R_at_m):
         for N in N_grid:
             regret_mean, _ = run_simulation(K, int(N), M, float(R), seed,
-                                              prior_type, regret_type,
-                                              pi_star_distribution)
+                                              prior_type, regret_type)
             points.append((int(N) * int(m), regret_mean, int(m), int(N)))
 
     # Identify Pareto-front points (no other point dominates them)
@@ -1723,15 +1492,6 @@ def main():
     parser.add_argument("--regret",    choices=["bayesian", "sample"],
                         default="bayesian",
                         help="regret type (default bayesian)")
-    parser.add_argument("--pi_star_dist", choices=["uniform", "mu_hyb", "both"],
-                        default="both",
-                        help="how to draw pi*: 'uniform' (clinical), 'mu_hyb' "
-                             "(paper's setup), or 'both' (default)")
-    parser.add_argument("--reward_model", choices=["literature", "stylized", "both"],
-                        default="both",
-                        help="reward model: 'literature' (Bernoulli with Kaldate "
-                             "probs, our default), 'stylized' (0/1 indicator, paper's "
-                             "setup), or 'both' (default)")
     parser.add_argument("--outdir",    type=str, default="./sensitivity_outputs",
                         help="directory for saved figures")
     args = parser.parse_args()
@@ -1744,38 +1504,17 @@ def main():
                               kappa=KAPPA_0, d_F=D_F_0,
                               R_mech_anchor=RMECH_DEFAULT)
 
-    # ----- Tables 1 and 2: print under selected combination(s) of setups -----
+    # ----- Tables 1 and 2 -----
     if not args.notables:
         R_mech_values  = [0.0, 0.3, 0.5, 0.7, 0.87, 1.0, 1.4, 1.9]
         N_values       = [5, 10, 20, 30, 50, 100, 200]
-
-        # Print explanatory legend first
-        print_setup_legend()
-
-        # Decide which (pi_star, reward) combinations to run
-        if args.pi_star_dist == "both":
-            pi_dists = ["mu_hyb", "uniform"]   # paper's first, then ours
-        else:
-            pi_dists = [args.pi_star_dist]
-
-        if args.reward_model == "both":
-            rew_models = ["stylized", "literature"]   # paper's first, then ours
-        else:
-            rew_models = [args.reward_model]
-
-        for pi_dist in pi_dists:
-            for rew in rew_models:
-                print_table1(K=K_0, N=12, M=args.M_tables, seed=42,
-                              R_mech_values=R_mech_values,
-                              prior_type=args.prior, regret_type=args.regret,
-                              pi_star_distribution=pi_dist,
-                              reward_model=rew)
-                print_table2(K=K_0, M=args.M_tables, seed=42,
-                              R_mech_anchor=RMECH_DEFAULT,
-                              N_values=N_values,
-                              prior_type=args.prior, regret_type=args.regret,
-                              pi_star_distribution=pi_dist,
-                              reward_model=rew)
+        print_table1(K=K_0, N=12, M=args.M_tables, seed=42,
+                       R_mech_values=R_mech_values,
+                       prior_type=args.prior, regret_type=args.regret)
+        print_table2(K=K_0, M=args.M_tables, seed=42,
+                       R_mech_anchor=RMECH_DEFAULT,
+                       N_values=N_values,
+                       prior_type=args.prior, regret_type=args.regret)
 
     # ----- Heatmaps -----
     if not args.noplots:
