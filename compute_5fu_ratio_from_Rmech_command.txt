@@ -2,12 +2,15 @@ cd /path/to/rmech_audit_orig
 python -c "
 import numpy as np
 from rmech.finite_n import run_thompson_sampling
-mu = np.ones(8) / 8
-baseline = run_thompson_sampling(12, 8, mu, 0.0, n_patients=3000, seed=42)
-print(f'{\"R_mech\":>8} {\"regret\":>10} {\"ratio\":>8}')
+K = 8
+mu = np.ones(K) / K
+baseline, _ = run_thompson_sampling(12, K, mu, 0.0, n_patients=3000, seed=42)
+print(f'{"R_mech":>8} {"regret":>10} {"ratio":>8}')
 for R in [0.0, 0.3, 0.7, 1.0, 1.4, 1.7, 1.9]:
-    r = run_thompson_sampling(12, 8, mu, R, n_patients=3000, seed=42)
-    print(f'{R:>8.2f} {r:>10.4f} {baseline/r:>7.2f}x')
+    r, std = run_thompson_sampling(12, K, mu, R, n_patients=3000, seed=42)
+    lb = np.sqrt(np.log(K) / (np.log(K)-R))
+    print(f'{R:>8.2f} {r:>10.4f} {std:>10.4f} {baseline/r:>7.2f}x {lb:>7.2f}x')
+
 "
 
 

@@ -162,7 +162,7 @@ for i in range(N_PATIENTS):
     bsa_auc_hits.append(probs[BSA_DOSE_IDX] >= 0.70)
 summary['bsa']['pct_at_target'] = float(np.mean(bsa_auc_hits))
 
-with open('/home/claude/clinical_sim_results.json', 'w') as f:
+with open('clinical_sim_results.json', 'w') as f:
     json.dump(summary, f)
 
 print("Simulation complete.")

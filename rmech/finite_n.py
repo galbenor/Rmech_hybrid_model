@@ -14,6 +14,59 @@ Reproduces the result reported in the paper:
 """
 
 import numpy as np
+from scipy.optimize import brentq
+
+
+def generate_linear_mixture_pmf(num_states, target_entropy, target_index=0):
+    """
+    Generates a Categorical PMF using a linear mixture to match a target entropy.
+    
+    Args:
+        num_states (int): The number of states (K).
+        target_entropy (float): The desired Shannon entropy in bits (C).
+        target_index (int): The index that will hold the maximum probability.
+        
+    Returns:
+        np.ndarray: The resulting Probability Mass Function (PMF).
+    """
+    max_entropy = np.log(num_states)
+    
+    # 1. Handle edge cases
+    if target_entropy < 0 or target_entropy > max_entropy + 1e-9:
+        raise ValueError(f"Target entropy must be between 0 and {max_entropy:.4f} bits.")
+    
+    if np.isclose(target_entropy, 0):
+        pmf = np.zeros(num_states)
+        pmf[target_index] = 1.0
+        return pmf
+        
+    if np.isclose(target_entropy, max_entropy):
+        return np.full(num_states, 1.0 / num_states)
+
+    # 2. Define the entropy function based on alpha
+    def mixture_entropy(alpha):
+        p_target = 1.0 - alpha * ((num_states - 1) / num_states)
+        p_other = alpha / num_states
+        
+        # Calculate Shannon entropy: H = -sum(p * log2(p))
+        H = 0.0
+        if p_target > 0:
+            H -= p_target * np.log(p_target)
+        if p_other > 0:
+            # Multiply by (K-1) since there are K-1 other identical states
+            H -= (num_states - 1) * p_other * np.log(p_other)
+            
+        return H
+
+    # 3. Find the optimal mixing parameter alpha where H(alpha) - target = 0
+    # brentq is highly reliable for bounded root-finding on monotonic functions
+    optimal_alpha = brentq(lambda a: mixture_entropy(a) - target_entropy, 0.0, 1.0)
+
+    # 4. Construct the final PMF array
+    pmf = np.full(num_states, optimal_alpha / num_states)
+    pmf[target_index] = 1.0 - optimal_alpha * ((num_states - 1) / num_states)
+    
+    return pmf
 
 
 def run_thompson_sampling(
@@ -40,37 +93,46 @@ def run_thompson_sampling(
     mu  = mu / mu.sum()
 
     total_regret = 0.0
-    accuracy     = 1.0 - np.exp(-rmech)   # model recommendation accuracy
+    i_prior = generate_linear_mixture_pmf(K, np.log(K)-rmech, target_index=1)
+    accuracy = i_prior.max()   # model recommendation accuracy
+    total_regrets = []
 
     for _ in range(n_patients):
         pistar = rng.choice(K, p=mu)
-
+        i_prior = generate_linear_mixture_pmf(K, np.log(K)-rmech, target_index=pistar)
         # Initialise Dirichlet/Beta prior
         alpha   = np.ones(K, dtype=float)
         beta_   = np.ones(K, dtype=float)
 
         if rmech > 0:
             # Model recommends an arm; with probability `accuracy` it is correct
-            pihat = pistar if rng.random() < accuracy else rng.integers(K)
-            alpha[pihat] += rmech * K          # concentrate prior on recommendation
+            pihat = rng.choice(K, p=i_prior)
+            i_prior = generate_linear_mixture_pmf(K, np.log(K)-rmech, target_index=pihat)
+            alpha = i_prior       # concentrate prior on recommendation
+            beta_ = np.ones(K, dtype=float)
 
         cumulative_regret = 0.0
         for _ in range(N_cycles):
             theta = rng.beta(alpha, beta_)
             arm   = int(np.argmax(theta))
+            prob = mu[arm]
             reward = 1.0 if arm == pistar else 0.0
+            update_reward = reward if rng.binomial(1, prob) else 0.0  # avoid updating on zero-prob arms
             cumulative_regret += (1.0 - reward)
-            alpha[arm] += reward
-            beta_[arm]  += (1.0 - reward)
+            alpha[arm] += update_reward
+            beta_[arm]  += (1.0 - update_reward)
 
         total_regret += cumulative_regret
+        total_regrets.append(cumulative_regret)
 
-    return total_regret / n_patients
+    mean_regret = total_regret / n_patients
+    std_error = np.std(total_regrets, ddof=1) / np.sqrt(n_patients) * 2  # 96% CI
+    return mean_regret, std_error
 
 
 def sweep(
     N_values:   list = [8, 10, 12],
-    rmech_vals: list = [0.0, 0.3, 0.5, 0.7, 1.0, 1.3, 1.62],
+    rmech_vals: list = [0.0, 0.3, 0.5, 1.0, 1.4, 1.9],
     K:          int  = 4,
     mu_prior:   np.ndarray = None,
     n_patients: int  = 5_000,
@@ -91,9 +153,10 @@ def sweep(
 
     for i, rm in enumerate(rmech_vals):
         for j, Nv in enumerate(N_values):
-            regret[i, j] = run_thompson_sampling(
+            mean_reg, _ = run_thompson_sampling(
                 Nv, K, mu_prior, rm, n_patients=n_patients, seed=seed + i*100 + j
             )
+            regret[i, j] = mean_reg
 
     # Reduction relative to uninformed (rmech=0) baseline
     baseline = regret[0, :]   # rmech = 0

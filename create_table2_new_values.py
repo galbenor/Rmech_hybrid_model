@@ -61,6 +61,8 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
 
+from rmech.finite_n import run_thompson_sampling
+
 # ============================================================================
 #  Helper functions (used by both phases)
 # ============================================================================
@@ -125,34 +127,18 @@ def sample_pi_hat(pi_star: int, q: float, K: int, rng) -> int:
 #  Phase 1: deterministic 0/1 reward, audit code prior
 # ============================================================================
 
-def ts_phase1_one_patient(K: int, N: int, R_mech: float, q: float, rng) -> float:
-    """One patient, Phase 1. Deterministic 0/1 reward, audit code prior."""
-    pi_star = int(rng.integers(0, K))
-    alpha = np.ones(K, dtype=float)
-    beta_ = np.ones(K, dtype=float)
-
-    if R_mech > 0.0:
-        pi_hat = sample_pi_hat(pi_star, q, K, rng)
-        alpha[pi_hat] += R_mech * K  # audit code convention (more concentrated than mu_hyb)
-
-    cum_regret = 0.0
-    for _ in range(N):
-        theta = rng.beta(alpha, beta_)
-        arm = int(np.argmax(theta))
-        reward = 1.0 if arm == pi_star else 0.0
-        cum_regret += (1.0 - reward)
-        alpha[arm] += reward
-        beta_[arm] += (1.0 - reward)
-    return cum_regret
-
-
 def run_phase1(K: int, N: int, M: int, R_mech: float, seed: int):
-    rng = np.random.default_rng(seed)
-    q = accuracy_for_target_mi(R_mech, K)
-    regrets = np.empty(M)
-    for i in range(M):
-        regrets[i] = ts_phase1_one_patient(K, N, R_mech, q, rng)
-    return regrets.mean(), regrets.std(ddof=1) / np.sqrt(M)
+    """Phase 1 using the finite-N Thompson Sampling algorithm from rmech/finite_n.py."""
+    mu_prior = np.full(K, 1.0 / K, dtype=float)
+    mean_regret, ci_96 = run_thompson_sampling(
+        N_cycles=N,
+        K=K,
+        mu_prior=mu_prior,
+        rmech=R_mech,
+        n_patients=M,
+        seed=seed,
+    )
+    return mean_regret, ci_96
 
 
 # ============================================================================
@@ -174,7 +160,7 @@ DOSE_MAX      = 3600.0    # mg/m^2
 # NEW: RMECH = 0.87 (under correct sigma=0.46 = Bernoulli noise std at p~0.30)
 # This saturates C(B_µ) = 0.879 nats from Eq. 4 with B_µ=0.22, K=8, kappa=1.8, d_F=3.
 # To use the more conservative Hoeffding sub-Gaussian sigma=0.50, set RMECH = 0.92.
-RMECH = 0.87  # CHANGED from 0.37
+RMECH = 1.9  # CHANGED from 0.37
 
 
 def reward_prob_at_distance(d_steps: int, K: int) -> float:
@@ -236,7 +222,7 @@ SEED = 42
 
 # CHANGED: anchored on the new ceiling 0.87.  Rows above 0.87 are speculative
 # (above the calibrated channel capacity); kept for sensitivity analysis.
-R_MECH_VALUES = [0.0, 0.3, 0.5, 0.7, 0.87, 1.0, 1.4, 1.9]
+R_MECH_VALUES = [0.0, 0.3, 0.7, 1.0, 1.4, 1.9]
 
 N_VALUES_TABLE2 = [5, 10, 20, 30, 50, 100, 200]
 log_K = np.log(K)
