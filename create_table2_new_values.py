@@ -1,60 +1,6 @@
 """
 Reproduce Tables 1 and 2 of "Mechanistic Information and Regret"
-(mechanistic_information.pdf, the corrected manuscript).
 
-================================================================================
-CALIBRATION UPDATE (April 2026, post-dossier-v2 corrections):
-================================================================================
-The original draft's reported C(B_µ) = 0.37 nats was computed under sigma=0.20,
-which was derived from continuous-AUC noise scale (CV ~ 20%).  This is WRONG:
-the reward in the bandit setup is Bernoulli (paper lines 60-62, 96-97), so
-sigma must be the std of Bernoulli noise on a {0,1} indicator, not the std of
-the underlying continuous AUC measurement.
-
-  - For Bernoulli with success p, std = sqrt(p(1-p)).
-  - At typical mid-range p ~ 0.30 across arms in the [p_BSA=0.20, p_opt=0.55]
-    operative range:  sigma ~ sqrt(0.21) = 0.458 ~ 0.46.
-  - Hoeffding 1963 (Lemma 1) gives sub-Gaussian sigma = 1/2 = 0.50 as a
-    uniform ceiling for any [0,1]-bounded RV.
-
-Plugging sigma = 0.46 (dossier-recommended) into Eq. 4 with the unchanged
-B_µ = 0.22, K = 8, kappa = 1.8, d_F = 3:
-  C(0.22) = 0.879 nats   <- new headline R_mech ceiling, was 0.37
-  H_mech floor = 1.20 nats   (was 1.71)
-  LB ratio sqrt(H(mu)/H_mech) = 1.32x  (was 1.10x)
-  B_crit (Eq. 10) = 0.174  (was 0.076; B_µ now 27% above instead of 290% above)
-
-The simulation accordingly uses RMECH = 0.87 to saturate the calibrated
-ceiling, instead of the speculative RMECH = 1.9 used in the draft.
-
-================================================================================
-PHASE 1 -- paper-aligned reproduction.
-  Reward model:    deterministic 0/1 (audit code convention; what the
-                   published Tables were generated from).
-  Prior:           Beta(1+R_mech*K, 1) at pi_hat (audit code convention).
-  Sample channel:  symmetric K-ary, with channel accuracy q solved
-                   numerically so I(pi*; pi_hat) = R_mech EXACTLY.
-  All formulas:    from mechanistic_information.pdf S 3.3 (corrected
-                   manuscript), including the corrected B_crit Eq. 10
-                   (NOT the small-SNR approximation).
-
-PHASE 2 -- literature-calibrated.
-  Reward model:    Bernoulli(p_arm) where p_arm depends on dose-step
-                   distance from optimal, computed from the Gaussian
-                   AUC integral with sigma_intra = 4.9 mg.h/L from
-                   Kaldate 2012 (|dAUC|/sqrt(2)) and slope 0.02063
-                   mg.h/L per mg/m^2 (Kaldate verbatim). Gives:
-                     p(d=0) = 0.6925   (analytic ceiling, mean AUC = 25)
-                     p(d=1) = 0.4145
-                     p(d=2) = 0.0827   ...etc
-  Regret:          Bayesian mean-reward gap (paper Definition 1).
-  Prior:           Beta(exp(R_mech), 1) at pi_hat. This makes
-                   P(first pick = pi_hat) = exp(R_mech)/(exp(R_mech)+K-1)
-                   = mu_hyb(pi_hat)   EXACTLY (verified algebraically).
-                   Persists across cycles via natural Bayesian updates.
-
-USAGE:  python3 reproduce_tables.py
-RUNTIME: ~60-90 seconds total.
 """
 
 import numpy as np
@@ -155,12 +101,7 @@ TARGET_MID    = 25.0      # mg.h/L; modeling assumption: optimal arm puts mean
 DOSE_MIN      = 1600.0    # mg/m^2, Kaldate clinical adjustment range
 DOSE_MAX      = 3600.0    # mg/m^2
 
-# ---- CHANGED: RMECH calibrated ceiling ----
-# OLD: RMECH = 0.37 (under wrong sigma=0.20 = continuous-AUC noise scale)
-# NEW: RMECH = 0.87 (under correct sigma=0.46 = Bernoulli noise std at p~0.30)
-# This saturates C(B_µ) = 0.879 nats from Eq. 4 with B_µ=0.22, K=8, kappa=1.8, d_F=3.
-# To use the more conservative Hoeffding sub-Gaussian sigma=0.50, set RMECH = 0.92.
-RMECH = 1.9  # CHANGED from 0.37
+RMECH = 1.9  # RMECH for Table 2
 
 
 def reward_prob_at_distance(d_steps: int, K: int) -> float:
@@ -190,59 +131,12 @@ N_VALUES_TABLE2 = [5, 10, 20, 30, 50, 100, 200]
 log_K = np.log(K)
 
 
-# ============================================================================
-#  Reporting
-# ============================================================================
-
-def print_running_examples():
-    """Recompute the paper's Running Examples 2 and 5 with corrected sigma
-    (Bernoulli reward) and corrected B_crit (Eq. 10)."""
-    print()
-    print("=" * 78)
-    print("Running Examples (mechanistic_information.pdf S 5.1, sigma corrected)")
-    print("=" * 78)
-
-    # CHANGED: sigma = 0.46 (Bernoulli noise std at typical p~0.30 across arms).
-    # OLD: sigma = 0.20 (continuous-AUC noise scale; conceptually wrong because
-    # the reward is the {0,1} in-window indicator, not the continuous AUC).
-    # ALTERNATIVE: sigma = 0.50 (Hoeffding sub-Gaussian ceiling) gives C = 0.92.
-    K_re, B_mu, sigma, kappa, d_F = 8, 0.22, 0.46, 1.8, 3
-    H_mu = np.log(K_re)
-    sigma_F_sq = 2.0 * sigma**2 * H_mu / (kappa**2 * d_F)
-    sigma_F = np.sqrt(sigma_F_sq)
-    C022 = channel_capacity_C(B_mu, sigma, kappa, sigma_F, d_F)
-    B_crit_corr = B_crit_corrected(sigma, kappa, H_mu, d_F, 12)
-    B_crit_oldapprox = (sigma / kappa) * np.sqrt(H_mu - 1.0)
-    H_hyb = H_mu_hyb_exact(RMECH, K_re)
-
-    print(f"  Inputs: K={K_re}, B_mu={B_mu}, sigma={sigma} (Bernoulli; was 0.20),")
-    print(f"          kappa={kappa}, d_F={d_F} (residual GP rank, NOT ODE compartments)")
-    print(f"  H(mu) = ln(K)               = {H_mu:.4f} nats")
-    print(f"  sigma_F^2 = 2*s^2*H/(k^2*d_F) = {sigma_F_sq:.5f}, sigma_F = {sigma_F:.4f}")
-    print()
-    print(f"  Channel capacity C({B_mu})    = {C022:.4f} nats   [Eq. 4]")
-    print(f"     -- new ceiling 0.87 (was 0.37 in draft under wrong sigma=0.20)")
-    print(f"  H(mu_hyb at R={RMECH})         = {H_hyb:.4f} nats   [Eq. 8]")
-    print(f"     -- expected ~2.02 at the new R=0.87 (was 1.69 at R=1.9)")
-    print()
-    print(f"  B_crit (Eq. 10, correct):                    = {B_crit_corr:.4f}")
-    print(f"     -- expected ~0.174 under sigma=0.46 (was 0.076 under sigma=0.20)")
-    print(f"  B_crit (small-SNR approx, Appdx D.3 typo):   = {B_crit_oldapprox:.4f}")
-    print(f"     -- this is the formula flagged as the typo in the audit")
-    ratio = B_mu / B_crit_corr if B_crit_corr > 0 else float('inf')
-    print(f"  Calibrated B_mu / B_crit (corrected)         = {ratio:.3f}")
-    if ratio > 1.0:
-        print(f"     -> baseline regime (B_mu just above phase transition)")
-    else:
-        print(f"     -> data-efficient regime (B_mu < B_crit)")
-
-
 def print_phase1_table1():
     print()
     print("=" * 110)
     print(f"PHASE 1, Table 1 (paper-aligned, deterministic reward, audit-code prior)")
     print(f"   K={K}, N={N_TABLE1}, M={M}, mu = Uniform")
-    print(f"   Calibrated R_mech ceiling = {RMECH} (sigma=0.46); rows above are speculative")
+    print(f"   Calibrated R_mech ceiling = {RMECH}; rows above are speculative")
     print("=" * 110)
     hdr = "{:>8} {:>8} {:>10} {:>14} {:>14} {:>10} {:>10} {:>10}".format(
         "R_mech", "H_mech", "H(mu_hyb)", "TS_hyb", "Uninf_TS",
