@@ -94,7 +94,6 @@ def run_thompson_sampling(
 
     total_regret = 0.0
     i_prior = generate_linear_mixture_pmf(K, np.log(K)-rmech, target_index=1)
-    accuracy = i_prior.max()   # model recommendation accuracy
     total_regrets = []
 
     for _ in range(n_patients):
@@ -117,10 +116,9 @@ def run_thompson_sampling(
             arm   = int(np.argmax(theta))
             prob = mu[arm]
             reward = 1.0 if arm == pistar else 0.0
-            update_reward = reward if rng.binomial(1, prob) else 0.0  # avoid updating on zero-prob arms
             cumulative_regret += (1.0 - reward)
-            alpha[arm] += update_reward
-            beta_[arm]  += (1.0 - update_reward)
+            alpha[arm] += reward
+            beta_[arm]  += (1.0 - reward)
 
         total_regret += cumulative_regret
         total_regrets.append(cumulative_regret)

@@ -99,10 +99,10 @@ def H_mu_hyb_exact(R_mech: float, K: int) -> float:
     return np.log(Z) - R_mech * np.exp(R_mech) / Z
 
 
-def B_crit_corrected(sigma: float, kappa_mu: float, H_mu: float, d_F: int) -> float:
+def B_crit_corrected(sigma: float, kappa_mu: float, H_mu: float, d_F: int, N: int) -> float:
     """B_crit from Eq. 10 (corrected, NOT small-SNR approximation).
     Returns 0.0 if no value of B_µ can yield C(B_µ) > 1 (i.e., d_F too small)."""
-    inside = (2.0 * H_mu / d_F) / (np.exp(2.0 / d_F) - 1.0) - 1.0
+    inside = (2.0 * H_mu / d_F) / (np.exp(2.0 * H_mu/ (d_F * N)) - 1.0) - 1.0
     if inside <= 0:
         return 0.0
     return (sigma / kappa_mu) * np.sqrt(inside)
@@ -173,44 +173,6 @@ def reward_prob_at_distance(d_steps: int, K: int) -> float:
                  norm.cdf((TARGET_LO - mu_AUC) / SIGMA_INTRA))
 
 
-def ts_phase2_one_patient(K: int, N: int, R_mech: float, q: float,
-                           p_by_distance: np.ndarray, rng) -> float:
-    """One patient, Phase 2."""
-    pi_star = int(rng.integers(0, K))
-    p_arms = np.array([p_by_distance[abs(k - pi_star)] for k in range(K)])
-    p_opt = p_arms[pi_star]
-
-    # Prior: Beta(exp(R_mech), 1) at pi_hat, Beta(1, 1) elsewhere.
-    # Verified: P(first pick = pi_hat) = exp(R)/(K+exp(R)-1) = mu_hyb(pi_hat) EXACTLY.
-    alpha = np.ones(K, dtype=float)
-    beta_ = np.ones(K, dtype=float)
-    if R_mech > 0.0:
-        pi_hat = sample_pi_hat(pi_star, q, K, rng)
-        alpha[pi_hat] = np.exp(R_mech)
-
-    cum_regret = 0.0
-    for _ in range(N):
-        theta = rng.beta(alpha, beta_)
-        arm = int(np.argmax(theta))
-        # Bayesian regret = mean-reward gap (paper Definition 1)
-        cum_regret += p_opt - p_arms[arm]
-        # Bernoulli reward and posterior update
-        reward = 1.0 if rng.random() < p_arms[arm] else 0.0
-        alpha[arm] += reward
-        beta_[arm] += (1.0 - reward)
-    return cum_regret
-
-
-def run_phase2(K: int, N: int, M: int, R_mech: float, seed: int):
-    rng = np.random.default_rng(seed)
-    q = accuracy_for_target_mi(R_mech, K)
-    p_by_distance = np.array([reward_prob_at_distance(d, K) for d in range(K)])
-    regrets = np.empty(M)
-    for i in range(M):
-        regrets[i] = ts_phase2_one_patient(K, N, R_mech, q, p_by_distance, rng)
-    return regrets.mean(), regrets.std(ddof=1) / np.sqrt(M)
-
-
 # ============================================================================
 #  Top-level configuration
 # ============================================================================
@@ -249,7 +211,7 @@ def print_running_examples():
     sigma_F_sq = 2.0 * sigma**2 * H_mu / (kappa**2 * d_F)
     sigma_F = np.sqrt(sigma_F_sq)
     C022 = channel_capacity_C(B_mu, sigma, kappa, sigma_F, d_F)
-    B_crit_corr = B_crit_corrected(sigma, kappa, H_mu, d_F)
+    B_crit_corr = B_crit_corrected(sigma, kappa, H_mu, d_F, 12)
     B_crit_oldapprox = (sigma / kappa) * np.sqrt(H_mu - 1.0)
     H_hyb = H_mu_hyb_exact(RMECH, K_re)
 
@@ -323,101 +285,17 @@ def print_phase1_table2():
             N, hm, hs, bm, bs, obs, reg))
 
 
-def print_phase2_calibration():
-    print()
-    print("=" * 78)
-    print("PHASE 2 calibration (literature-derived, Kaldate 2012)")
-    print("=" * 78)
-    print(f"  Kaldate slope = {KALDATE_SLOPE} mg.h/L per mg/m^2")
-    print(f"  sigma_intra   = {SIGMA_INTRA} mg.h/L  (= |dAUC|/sqrt(2) from Kaldate)")
-    print(f"  Target window = [{TARGET_LO}, {TARGET_HI}] mg.h/L (Kaldate Discussion)")
-    print(f"  Optimal-arm AUC = {TARGET_MID} mg.h/L (target window center; modeling choice;")
-    print(f"                                       NOT Kaldate baseline mean of 20.2)")
-    dose_grid = np.linspace(DOSE_MIN, DOSE_MAX, K)
-    dose_step = dose_grid[1] - dose_grid[0]
-    dauc_step = KALDATE_SLOPE * dose_step
-    print(f"  Dose grid     = {[f'{d:.0f}' for d in dose_grid]}")
-    print(f"  AUC step      = {dauc_step:.4f} mg.h/L per dose-step")
-    print()
-    print(f"  Reward probability by dose-step distance from optimal:")
-    for d in range(K):
-        p = reward_prob_at_distance(d, K)
-        marker = ""
-        if d == 0:
-            marker = "    <- p_opt (analytic ceiling)"
-        elif d == 1:
-            marker = "    <- one step away (Delta_r ~ p(0)-p(1))"
-        print(f"    d={d}: p = {p:.4f}{marker}")
-    print()
-    delta_r = reward_prob_at_distance(0, K) - reward_prob_at_distance(1, K)
-    print(f"  Per-step Delta_r = p(0) - p(1) = {delta_r:.4f}")
-
-
-def print_phase2_table1():
-    print()
-    print("=" * 110)
-    print(f"PHASE 2, Table 1 (literature-calibrated, Bayesian regret, mu_hyb-exact prior)")
-    print(f"   K={K}, N={N_TABLE1}, M={M}, mu = Uniform")
-    print(f"   Calibrated R_mech ceiling = {RMECH} (sigma=0.46); rows above are speculative")
-    print("=" * 110)
-    hdr = "{:>8} {:>8} {:>10} {:>14} {:>14} {:>10} {:>10} {:>10}".format(
-        "R_mech", "H_mech", "H(mu_hyb)", "TS_hyb", "Uninf_TS",
-        "Obs/UnInf", "LB_pred", "ratio")
-    print(hdr); print("-" * 110)
-    base_mean, base_se = run_phase2(K, N_TABLE1, M, 0.0, SEED)
-    for R in R_MECH_VALUES:
-        H_mech = max(log_K - R, 1e-9)
-        H_hyb = H_mu_hyb_exact(R, K)
-        hyb_mean, hyb_se = run_phase2(K, N_TABLE1, M, R, SEED)
-        obs = base_mean / hyb_mean if hyb_mean > 1e-9 else float("inf")
-        LB = np.sqrt(log_K / H_mech)
-        marker = ""
-        if abs(R - RMECH) < 1e-6:
-            marker = "  <- ceiling"
-        elif R > RMECH:
-            marker = "  (above ceiling)"
-        print("{:>8.2f} {:>8.2f} {:>10.2f} {:>5.2f}+/-{:<6.2f} "
-              "{:>5.2f}+/-{:<6.2f} {:>9.2f}x {:>9.2f}x {:>10.2f}{}".format(
-            R, H_mech, H_hyb, hyb_mean, hyb_se, base_mean, base_se,
-            obs, LB, obs/LB, marker))
-
-
-def print_phase2_table2():
-    print()
-    print("=" * 88)
-    print(f"PHASE 2, Table 2 (literature-calibrated, varying N at R_mech = {RMECH})")
-    print("=" * 88)
-    hdr = "{:>6} {:>16} {:>16} {:>12} {:>24}".format(
-        "N", "TS_hyb", "Uninf_TS", "Obs/UnInf", "Regime")
-    print(hdr); print("-" * 88)
-    for N in N_VALUES_TABLE2:
-        bm, bs = run_phase2(K, N, M, 0.0, SEED + N)
-        hm, hs = run_phase2(K, N, M, RMECH, SEED + N)
-        obs = bm / hm if hm > 1e-9 else float("inf")
-        if N <= 30: reg = "burn-in dominated"
-        elif N <= 100: reg = "transitional"
-        else: reg = "asymptotic"
-        print("{:>6d} {:>6.2f}+/-{:<8.2f} {:>6.2f}+/-{:<8.2f} {:>10.2f}x  {:<24}".format(
-            N, hm, hs, bm, bs, obs, reg))
-
-
 # ============================================================================
 #  Main
 # ============================================================================
 
 if __name__ == "__main__":
     import sys
-    print_running_examples()
-    sys.stdout.flush()
+    # print_running_examples()
+    # sys.stdout.flush()
     print_phase1_table1()
     sys.stdout.flush()
     print_phase1_table2()
-    sys.stdout.flush()
-    print_phase2_calibration()
-    sys.stdout.flush()
-    print_phase2_table1()
-    sys.stdout.flush()
-    print_phase2_table2()
     sys.stdout.flush()
     print()
     print("=" * 78)
