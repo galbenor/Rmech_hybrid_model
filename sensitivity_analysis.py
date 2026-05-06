@@ -14,20 +14,6 @@ file is modified -- this is a drop-in addition.
   - make_fig_sensitivity_K()     -> fig_sensitivity_K.pdf
         1x2 grid: sensitivity to K (number of arms).  Shows B_crit vs K and
         the asymptotic ratio rho = H(mu)/H_mech.
-  - make_fig_measurements()      -> fig_measurements.pdf
-        Cumulative-regret trajectories vs cycle for a sweep of within-cycle
-        measurement counts m (paper Appendix H.6).  Signal-bearing Bernoulli
-        rewards mirroring upstream rmech.finite_n.run_thompson_sampling
-        exactly: opt_prob if arm == pi*, 1 - opt_prob otherwise.
-  - make_fig_measurements_ratio()-> fig_measurements_ratio.pdf
-        Cycle-savings ratio (uninformed/hybrid) at N=12 vs m, for several
-        R_mech values.  Same TS engine as above.
-
-        NOTE: at large m both uninformed TS and hybrid TS converge toward
-        near-zero regret within the N=12 horizon; the ratio's denominator
-        becomes small and the metric is inherently noisier at the right
-        edge of the plot (m >= 100).  This is a property of the metric,
-        not a bug; n_patients defaults to 10000 here for stability.
 
 Formulas (verified to 4 decimals against the paper at the calibrated point):
   - C(B_mu)       -- Eq. 3 with canonical sigma_F^2 = 2 sigma^2 H(mu) / (kappa^2 d_F)
@@ -95,75 +81,6 @@ def B_crit(sigma: float, kappa: float, H_mu: float, d_F: int, N: int) -> float:
     return (sigma / kappa) * np.sqrt(inside)
 
 
-# ============================================================================
-#  Per-cycle TS trajectory with m measurements per cycle
-#  (thin extension of rmech.finite_n.run_thompson_sampling; existing code
-#   returns only the final scalar mean and supports only m=1).
-# ============================================================================
-def _run_ts_trajectory(N_cycles: int, K: int, rmech: float, m: int,
-                       n_patients: int = 3000, seed: int = 42,
-                       opt_prob: float = OPT_PROB) -> np.ndarray:
-    """Thompson Sampling with m within-cycle measurements per decision.
-    Returns the per-cycle cumulative-regret trajectory averaged over patients.
-
-    Decision schedule (paper Running Example 1, Appendix H.6):
-      * One decision per cycle.  At cycle start, the agent samples theta from
-        its current Beta posterior, picks arm = argmax theta, and commits.
-      * That arm produces m i.i.d. Bernoulli observations during the cycle.
-      * At cycle end, the agent updates its posterior using the m observations
-        (Binomial(m, p_arm) on alpha; the complement on beta).
-      * Regret accrues once per cycle, against the underlying optimal pi*.
-
-    Reward model (mirrors rmech.finite_n.run_thompson_sampling exactly):
-      * If arm == pi*:    each draw is Bernoulli(opt_prob)        (default 0.8)
-      * If arm != pi*:    each draw is Bernoulli(1 - opt_prob)    (default 0.2)
-      Setting opt_prob = 1.0 recovers the deterministic-reward limit.
-
-    Per-cycle regret in probability units (matches upstream
-    cumulative_regret += opt_prob - selection_prob):
-      * 0 per correct cycle
-      * (2*opt_prob - 1) per wrong cycle  (= 0.6 at default)
-
-    Mechanistic prior: when rmech > 0, the algorithm sees a recommendation
-    pihat sampled from the mu_hyb-shaped distribution
-    `generate_linear_mixture_pmf(K, lnK-rmech, target_index=pistar)`, and
-    uses the same generator with target_index=pihat to construct its prior
-    alpha = i_prior, beta = ones (audit-code convention)."""
-    rng = np.random.default_rng(seed)
-    mu = np.full(K, 1.0 / K)
-    log_K = np.log(K)
-    traj = np.zeros(N_cycles)
-    p_wrong = 1.0 - opt_prob
-    regret_per_wrong = opt_prob - p_wrong   # = 2*opt_prob - 1
-
-    for _ in range(n_patients):
-        pistar = rng.choice(K, p=mu)
-        alpha = np.ones(K, dtype=float)
-        beta_ = np.ones(K, dtype=float)
-
-        if rmech > 0:
-            i_prior = generate_linear_mixture_pmf(K, log_K - rmech, target_index=pistar)
-            pihat = rng.choice(K, p=i_prior)
-            i_prior = generate_linear_mixture_pmf(K, log_K - rmech, target_index=pihat)
-            alpha = i_prior.copy()
-            beta_ = np.ones(K, dtype=float)
-
-        cumr = 0.0
-        for t in range(N_cycles):
-            # 1. Decision at cycle start (one per cycle).
-            theta = rng.beta(alpha, beta_)
-            arm = int(np.argmax(theta))
-            # 2. Per-cycle regret in probability units (matches upstream).
-            cumr += 0.0 if arm == pistar else regret_per_wrong
-            # 3. m within-cycle Bernoulli observations on the chosen arm,
-            #    aggregated and applied at cycle end.
-            prob = opt_prob if arm == pistar else p_wrong
-            sum_reward = rng.binomial(m, prob)
-            alpha[arm] += sum_reward
-            beta_[arm] += m - sum_reward
-            traj[t] += cumr
-
-    return traj / n_patients
 
 
 # ============================================================================
@@ -399,119 +316,6 @@ def make_fig_sensitivity_K(out_path: str = "fig_sensitivity_K.pdf") -> None:
     print(f"Saved {out_path}")
 
 
-# ============================================================================
-#  Figure 3:  fig_measurements.pdf
-#             Empirical effect of within-cycle measurement count m on regret.
-# ============================================================================
-def make_fig_measurements(out_path: str = "fig_measurements.pdf",
-                          n_patients: int = 3000, seed: int = 42) -> None:
-    """Cumulative-regret trajectories at R_mech = 0.8 for m in {1, 5, 10, 100,
-    inf} plus the m=1 uninformed reference, over N = 30 cycles.  m = inf is
-    approximated by m = 10000 (paper Appendix H.6 convention).
-
-    All m values use the SAME seed (paired comparison / common random
-    numbers): pi* and pihat draws are identical across m, so the only
-    diverging RNG consumption is the Binomial(m, prob) draw inside each
-    cycle.  This guarantees monotone ordering of the trajectories instead
-    of seed-induced crossovers between m=100 and m=10000."""
-    M_INF = 10000     # paper convention: m = inf ~ m = 10000
-    N_A   = 30
-
-    R_mech_A = 0.8
-    m_list_A = [1, 5, 10, 100, M_INF]
-    traj_uninf = _run_ts_trajectory(N_A, CAL_K, rmech=0.0, m=1,
-                                    n_patients=n_patients, seed=seed)
-    traj_hyb = {}
-    for m in m_list_A:
-        # Paired comparison across m: same seed, only the Binomial(m,.) call
-        # diverges between runs.  Removes the m=100 vs m=inf crossover that
-        # plagues independent-seed sweeps at moderate n_patients.
-        traj_hyb[m] = _run_ts_trajectory(N_A, CAL_K, rmech=R_mech_A, m=m,
-                                         n_patients=n_patients,
-                                         seed=seed + 1000)
-
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    cycles = np.arange(1, N_A + 1)
-    palette = {1: "tab:purple", 5: "tab:blue", 10: "tab:green",
-               100: "tab:orange", M_INF: "tab:red"}
-    label_for = {1: "1", 5: "5", 10: "10", 100: "100", M_INF: r"\infty"}
-    ax.plot(cycles, traj_uninf, color="tab:purple", lw=1.7, ls="--",
-            label="$m = 1$ (uninformed)")
-    for m in m_list_A:
-        ax.plot(cycles, traj_hyb[m], color=palette[m], lw=1.7,
-                label=f"$m = {label_for[m]}$ (hybrid)")
-    ax.set_xlabel("Cycle")
-    ax.set_ylabel("Cumulative regret")
-    ax.set_title(rf"Regret over cycles  ($R_{{\rm mech}} = {R_mech_A}$, $K = {CAL_K}$)")
-    ax.legend(loc="upper left", fontsize=6.5, ncol=1)
-    ax.set_xlim(0, N_A)
-    ax.set_ylim(0, None)
-
-    plt.tight_layout()
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out_path}")
-
-
-def make_fig_measurements_ratio(out_path: str = "fig_measurements_ratio.pdf",
-                                n_patients: int = 10000, seed: int = 42) -> None:
-    """Cycle-savings ratio (uninformed/hybrid) at N = 12 vs within-cycle
-    measurement count m on log-scale, for four values of R_mech.  m = inf is
-    approximated by m = 10000 (paper Appendix H.6 convention).
-
-    Default n_patients = 10000 (vs 3000 elsewhere) because the ratio metric
-    is inherently noisy at large m: at m >= 100 both uninformed and hybrid
-    TS converge toward near-zero regret within the N=12 horizon, so the
-    ratio is small/small and dominated by sampling SE.  Bumping n by 3.3x
-    cuts SE by ~1.8x.  The interpretive shape (ratio decreases with m
-    because uninformed TS can also learn given enough measurements) is a
-    real finding, not a noise artifact -- the noise just inflates the
-    rightmost values.
-
-    Each R_mech curve uses its own seed (R-paired); within each curve, m
-    values share a seed (m-paired) for variance reduction across m."""
-    M_INF = 10000
-    N_B   = CAL_N     # 12
-    m_list_B = [1, 2, 5, 10, 100, M_INF]
-    R_mech_B = [0.30, 0.80, 1.40, 1.90]
-
-    # Uninformed regret depends on m through the Binomial draw; same seed
-    # across m for paired comparison.
-    uninf_at_m = {}
-    for m in m_list_B:
-        uninf_at_m[m] = _run_ts_trajectory(N_B, CAL_K, rmech=0.0, m=m,
-                                           n_patients=n_patients,
-                                           seed=seed + 2000)[-1]
-    # Hybrid regret at each (R_mech, m): seed depends on R only (paired
-    # across m within a given R).  R-offset uses *1000 so adjacent R values
-    # don't collide with anything in the m loop above.
-    ratios = {R: [] for R in R_mech_B}
-    for R in R_mech_B:
-        for m in m_list_B:
-            hyb = _run_ts_trajectory(N_B, CAL_K, rmech=R, m=m,
-                                     n_patients=n_patients,
-                                     seed=seed + 3000 + int(R * 1000))[-1]
-            r = uninf_at_m[m] / hyb if hyb > 1e-9 else float("inf")
-            ratios[R].append(r)
-
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    palette_B = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-    x_pos = np.arange(len(m_list_B))     # use index for evenly spaced log-scale
-    for R, color in zip(R_mech_B, palette_B):
-        ax.plot(x_pos, ratios[R], marker="o", color=color, lw=1.7, ms=5,
-                label=rf"$R_{{\rm mech}} = {R:.2f}$")
-    ax.axhline(1.0, ls=":", color="grey", lw=1)
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels([str(m) if m != M_INF else r"$\infty$" for m in m_list_B])
-    ax.set_xlabel(r"Within-cycle measurements $m$  (log scale)")
-    ax.set_ylabel("Regret ratio  (uninformed / hybrid)")
-    ax.set_title(rf"Cycle-savings ratio vs $m$  ($N = {N_B}$)")
-    ax.legend(loc="upper right", fontsize=9)
-
-    plt.tight_layout()
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out_path}")
 
 
 # ============================================================================
@@ -523,9 +327,5 @@ if __name__ == "__main__":
     make_fig_sensitivity_full()
     sys.stdout.flush()
     make_fig_sensitivity_K()
-    sys.stdout.flush()
-    make_fig_measurements()
-    sys.stdout.flush()
-    make_fig_measurements_ratio()
     sys.stdout.flush()
     print(f"All four figures generated in {time.time() - t0:.1f}s.")
