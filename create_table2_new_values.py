@@ -7,7 +7,7 @@ import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-from rmech.finite_n import run_thompson_sampling
+from rmech.finite_n import run_thompson_sampling, generate_linear_mixture_pmf
 
 # ============================================================================
 #  Helper functions (used by both phases)
@@ -67,6 +67,51 @@ def sample_pi_hat(pi_star: int, q: float, K: int, rng) -> int:
     if rng.random() < q:
         return pi_star
     return int(rng.integers(0, K))
+
+def run_bsa_baseline(K: int, N: int, M: int, R_mech: float, seed: int,
+                     opt_prob: float = 0.8):
+    """BSA baseline: pick the mechanistic recommendation pi_hat at cycle 1,
+    commit to it for all N cycles (no learning, no feedback).
+
+    Mirrors rmech.finite_n.run_thompson_sampling line-for-line for parity:
+    same RNG seeding, same pi*/pi_hat sampling via generate_linear_mixture_pmf,
+    same per-cycle (opt_prob - selection_prob) regret accounting, same
+    Bernoulli biological-noise draw per cycle.  The only differences are
+    (a) the chosen arm is fixed to pi_hat at every cycle (no theta sample,
+    no argmax) and (b) the Bernoulli draw is discarded (no posterior update).
+
+    Returns (mean_regret, std_error) just like run_thompson_sampling.
+
+    At R_mech = 0 there is no mechanistic recommendation; BSA falls back
+    to a uniform random arm picked once and committed to (the same fallback
+    upstream uses when its rmech > 0 branch is bypassed)."""
+    rng = np.random.default_rng(seed)
+    mu = np.full(K, 1.0 / K, dtype=float)
+    log_K = np.log(K)
+    total_regrets = []
+
+    for _ in range(M):
+        pistar = rng.choice(K, p=mu)
+
+        if R_mech > 0:
+            i_prior = generate_linear_mixture_pmf(K, log_K - R_mech, target_index=pistar)
+            pihat = rng.choice(K, p=i_prior)
+        else:
+            pihat = rng.integers(0, K)
+
+        cumulative_regret = 0.0
+        for _ in range(N):
+            arm = pihat       # fixed for all cycles (no learning)
+            selection_prob = opt_prob if arm == pistar else 1 - opt_prob
+            _ = 1.0 if rng.random() < selection_prob else 0.0   # biological noise, discarded
+            cumulative_regret += (opt_prob - selection_prob)
+
+        total_regrets.append(cumulative_regret)
+
+    arr = np.asarray(total_regrets)
+    mean_regret = float(arr.mean())
+    std_error = float(arr.std(ddof=1) / np.sqrt(M) * 2)   # 96% CI, matches upstream
+    return mean_regret, std_error
 
 
 # ============================================================================
@@ -133,21 +178,24 @@ log_K = np.log(K)
 
 def print_phase1_table1():
     print()
-    print("=" * 110)
+    print("=" * 140)
     print(f"PHASE 1, Table 1 (paper-aligned, deterministic reward, audit-code prior)")
     print(f"   K={K}, N={N_TABLE1}, M={M}, mu = Uniform")
     print(f"   Calibrated R_mech ceiling = {RMECH}; rows above are speculative")
-    print("=" * 110)
-    hdr = "{:>8} {:>8} {:>10} {:>14} {:>14} {:>10} {:>10} {:>10}".format(
+    print(f"   BSA = pick mechanistic recommendation pi_hat, commit for all {N_TABLE1} cycles")
+    print("=" * 140)
+    hdr = "{:>8} {:>8} {:>10} {:>14} {:>14} {:>14} {:>10} {:>11} {:>10} {:>10}".format(
         "R_mech", "H_mech", "H(mu_hyb)", "TS_hyb", "Uninf_TS",
-        "Obs/UnInf", "LB_pred", "ratio")
-    print(hdr); print("-" * 110)
+        "BSA", "Obs/UnInf", "TS_hyb/BSA", "LB_pred", "ratio")
+    print(hdr); print("-" * 140)
     base_mean, base_se = run_phase1(K, N_TABLE1, M, 0.0, SEED)
     for R in R_MECH_VALUES:
         H_mech = max(log_K - R, 1e-9)
         H_hyb = H_mu_hyb_exact(R, K)
         hyb_mean, hyb_se = run_phase1(K, N_TABLE1, M, R, SEED)
+        bsa_mean, bsa_se = run_bsa_baseline(K, N_TABLE1, M, R, SEED)
         obs = base_mean / hyb_mean if hyb_mean > 1e-9 else float("inf")
+        ts_over_bsa = hyb_mean / bsa_mean if bsa_mean > 1e-9 else float("inf")
         LB = np.sqrt(log_K / H_mech)
         marker = ""
         if abs(R - RMECH) < 1e-6:
@@ -155,10 +203,10 @@ def print_phase1_table1():
         elif R > RMECH:
             marker = "  (above ceiling)"
         print("{:>8.2f} {:>8.2f} {:>10.2f} {:>5.2f}+/-{:<6.2f} "
-              "{:>5.2f}+/-{:<6.2f} {:>9.2f}x {:>9.2f}x {:>10.2f}{}".format(
+              "{:>5.2f}+/-{:<6.2f} {:>5.2f}+/-{:<6.2f} {:>9.2f}x {:>10.2f}x {:>9.2f}x {:>10.2f}{}".format(
             R, H_mech, H_hyb, hyb_mean, hyb_se, base_mean, base_se,
-            obs, LB, obs/LB, marker))
-
+            bsa_mean, bsa_se, obs, ts_over_bsa, LB, obs/LB, marker))
+        
 
 def print_phase1_table2():
     print()
