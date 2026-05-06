@@ -120,14 +120,14 @@ def reward_prob_at_distance(d_steps: int, K: int) -> float:
 
 K = 8
 N_TABLE1 = 12
-M = 3000
+M = 10000
 SEED = 42
 
 # CHANGED: anchored on the new ceiling 0.87.  Rows above 0.87 are speculative
 # (above the calibrated channel capacity); kept for sensitivity analysis.
 R_MECH_VALUES = [0.0, 0.3, 0.7, 1.0, 1.4, 1.9]
 
-N_VALUES_TABLE2 = [5, 10, 20, 30, 50, 100, 200]
+N_VALUES_TABLE2 = [5, 10, 20, 30, 50, 100, 150]
 log_K = np.log(K)
 
 
@@ -173,7 +173,7 @@ def print_phase1_table2():
         hm, hs = run_phase1(K, N, M, RMECH, SEED + N)
         obs = bm / hm if hm > 1e-9 else float("inf")
         if N <= 30: reg = "burn-in dominated"
-        elif N <= 100: reg = "transitional"
+        elif N < 100: reg = "transitional"
         else: reg = "asymptotic"
         print("{:>6d} {:>6.2f}+/-{:<8.2f} {:>6.2f}+/-{:<8.2f} {:>10.2f}x  {:<24}".format(
             N, hm, hs, bm, bs, obs, reg))

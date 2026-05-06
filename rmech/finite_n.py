@@ -116,9 +116,10 @@ def run_thompson_sampling(
             arm   = int(np.argmax(theta))
             prob = mu[arm]
             reward = 1.0 if arm == pistar else 0.0
+            update_reward = 1.0 if rng.random() < prob else 0.0
             cumulative_regret += (1.0 - reward)
-            alpha[arm] += reward
-            beta_[arm]  += (1.0 - reward)
+            alpha[arm] += update_reward
+            beta_[arm]  += (1.0 - update_reward)
 
         total_regret += cumulative_regret
         total_regrets.append(cumulative_regret)
