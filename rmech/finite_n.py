@@ -77,7 +77,7 @@ def run_thompson_sampling(
     n_patients:    int = 5_000,
     seed:          int = 0,
     opt_prob:      float = 0.85,
-    bsa_prob:      float = 0.25
+    bsa_prob:      float = 0.2
 ) -> float:
     """
     Simulate Thompson Sampling over a fixed N-cycle course.
