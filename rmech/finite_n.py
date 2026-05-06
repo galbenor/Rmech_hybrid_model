@@ -76,7 +76,8 @@ def run_thompson_sampling(
     rmech:         float,
     n_patients:    int = 5_000,
     seed:          int = 0,
-    opt_prob:      float = 0.8
+    opt_prob:      float = 0.85,
+    bsa_prob:      float = 0.25
 ) -> float:
     """
     Simulate Thompson Sampling over a fixed N-cycle course.
@@ -115,7 +116,7 @@ def run_thompson_sampling(
         for _ in range(N_cycles):
             theta = rng.beta(alpha, beta_)
             arm   = int(np.argmax(theta))
-            selection_prob = opt_prob if arm == pistar else 1 - opt_prob
+            selection_prob = opt_prob if arm == pistar else bsa_prob
             update_reward = 1.0 if rng.random() < selection_prob else 0.0
             cumulative_regret += (opt_prob - selection_prob)
             alpha[arm] += update_reward

@@ -295,7 +295,7 @@ SEED = 42
 # (above the calibrated channel capacity); kept for sensitivity analysis.
 R_MECH_VALUES = [0.0, 0.3, 0.8, 1.4, 1.9]
 
-N_VALUES_TABLE2 = [5, 10, 20, 50, 100]
+N_VALUES_TABLE2 = [5, 10, 20, 50, 200]
 log_K = np.log(K)
 
 

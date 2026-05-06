@@ -92,6 +92,7 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
     2D heatmaps of B_mu / B_crit over each parameter pair, with the phase
     boundary at ratio = 1 marked in black and the calibrated 5-FU point
     marked with a gold dot."""
+    plt.rcParams['font.size'] = 14
     fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.5))
     threshold = CAL_HMU / CAL_N    # 0.1733; the C(B_crit)=H(mu)/N working point
     H_mu = CAL_HMU
@@ -106,11 +107,11 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
                label=fr"$H(\mu)/N = {threshold:.3f}$")
     ax.axvline(CAL_BMU, ls="--", color="grey", lw=1, alpha=0.8)
     ax.text(CAL_BMU + 0.015, 0.03,
-            f"$B_\\mu = {CAL_BMU}$\n(calibrated)", fontsize=8.5, color="grey")
+            f"$B_\\mu = {CAL_BMU}$\n(calibrated)", fontsize=12, color="grey")
     ax.set_xlabel(r"$B_\mu$  (model bias)")
     ax.set_ylabel(r"Channel capacity $C(B_\mu)$  [nats]")
-    ax.set_title(rf"A. $C$ vs $B_\mu$  ($\kappa_\mu = {CAL_KAPPA}$)")
-    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title("A.")
+    ax.legend(loc="upper right", fontsize=12)
     ax.set_xlim(B_grid[0], B_grid[-1])
     ax.set_ylim(0, None)
 
@@ -124,11 +125,11 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
                label=fr"$H(\mu)/N = {threshold:.3f}$")
     ax.axvline(CAL_KAPPA, ls="--", color="grey", lw=1, alpha=0.8)
     ax.text(CAL_KAPPA + 0.05, 0.07,
-            f"$\\kappa_\\mu = {CAL_KAPPA}$\n(calibrated)", fontsize=8.5, color="grey")
+            f"$\\kappa_\\mu = {CAL_KAPPA}$\n(calibrated)", fontsize=12, color="grey")
     ax.set_xlabel(r"$\kappa_\mu$  (PMP sensitivity)")
     ax.set_ylabel(rf"$C(B_\mu = {CAL_BMU})$  [nats]")
-    ax.set_title(rf"B. $C$ vs $\kappa_\mu$  ($B_\mu = {CAL_BMU}$)")
-    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title("B.")
+    ax.legend(loc="upper right", fontsize=12)
     ax.set_xlim(kappa_grid[0], kappa_grid[-1])
     ax.set_ylim(0, None)
 
@@ -141,18 +142,18 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
                 label=f"$\\kappa_\\mu = {kappa}$")
     ax.axhline(H_mu, ls="-.", color="grey", lw=1, alpha=0.6)
     ax.text(d_F_grid[-1] - 0.4, H_mu - 0.07,
-            f"$H(\\mu) = \\ln K = {H_mu:.2f}$", fontsize=8.5, color="grey",
+            f"$H(\\mu) = \\ln K = {H_mu:.2f}$", fontsize=12, color="grey",
             ha="right")
     ax.axhline(threshold, ls=":", color="grey", lw=1)
     ax.text(d_F_grid[-1] - 0.4, threshold + 0.02,
-            f"$H(\\mu)/N = {threshold:.3f}$", fontsize=8.5, color="grey", ha="right")
+            f"$H(\\mu)/N = {threshold:.3f}$", fontsize=12, color="grey", ha="right")
     ax.axvline(CAL_DF, ls="--", color="grey", lw=1, alpha=0.8)
     ax.text(CAL_DF + 0.1, 0.55,
-            f"$d_F = {CAL_DF}$\n(calibrated)", fontsize=8.5, color="grey")
+            f"$d_F = {CAL_DF}$\n(calibrated)", fontsize=12, color="grey")
     ax.set_xlabel(r"$d_F$  (residual GP rank)")
     ax.set_ylabel(rf"$C(B_\mu = {CAL_BMU})$  [nats]")
-    ax.set_title(rf"C. $C$ vs $d_F$  ($B_\mu = {CAL_BMU}$)")
-    ax.legend(loc="upper left", fontsize=9)
+    ax.set_title("C.")
+    ax.legend(loc="upper left", fontsize=12)
     ax.set_xlim(0.7, 10.3)
     ax.set_ylim(0, max(2.1, H_mu + 0.1))
 
@@ -163,6 +164,7 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
     B_h     = np.linspace(0.05, 1.5, 120)
     kappa_h = np.linspace(0.3, 5.5, 120)
     d_F_h   = np.arange(1, 21)        # integer d_F in heatmaps
+    N_h     = np.arange(5, 51)        # N in heatmaps
 
     # Panel D: (B_mu, kappa) at d_F = 3
     Z_D = np.empty((len(kappa_h), len(B_h)))
@@ -175,17 +177,17 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
     cs = ax.contour(B_h, kappa_h, Z_D, levels=[1.0], colors="black", linewidths=1.3)
     try:
         ax.clabel(cs, fmt={1.0: r"$B_\mu/B^{\rm crit}_\mu = 1$"},
-                  fontsize=9, inline=True)
+                  fontsize=12, inline=True)
     except Exception:
         pass
     ax.scatter([CAL_BMU], [CAL_KAPPA], marker="o", s=120,
                facecolor="gold", edgecolor="black", linewidth=1.0, zorder=10)
-    ax.text(CAL_BMU + 0.07, CAL_KAPPA - 0.05, "calibrated 5-FU", fontsize=8.5,
+    ax.text(CAL_BMU + 0.07, CAL_KAPPA - 0.05, "calibrated 5-FU", fontsize=12,
             bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
                       edgecolor="lightgrey", alpha=0.9))
     ax.set_xlabel(r"$B_\mu$")
     ax.set_ylabel(r"$\kappa_\mu$")
-    ax.set_title(rf"D. $B_\mu / B_\mu^{{\rm crit}}$ heatmap  ($d_F = {CAL_DF}$)")
+    ax.set_title("D.")
 
     # Panel E: (B_mu, d_F) at kappa = 1.8
     Z_E = np.empty((len(d_F_h), len(B_h)))
@@ -198,50 +200,45 @@ def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> Non
     cs = ax.contour(B_h, d_F_h, Z_E, levels=[1.0], colors="black", linewidths=1.3)
     try:
         ax.clabel(cs, fmt={1.0: r"$B_\mu/B^{\rm crit}_\mu = 1$"},
-                  fontsize=9, inline=True)
+                  fontsize=12, inline=True)
     except Exception:
         pass
     ax.scatter([CAL_BMU], [CAL_DF], marker="o", s=120,
                facecolor="gold", edgecolor="black", linewidth=1.0, zorder=10)
-    ax.text(CAL_BMU + 0.07, CAL_DF - 0.4, "calibrated 5-FU", fontsize=8.5,
+    ax.text(CAL_BMU + 0.07, CAL_DF - 0.4, "calibrated 5-FU", fontsize=12,
             bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
                       edgecolor="lightgrey", alpha=0.9))
     ax.set_xlabel(r"$B_\mu$")
     ax.set_ylabel(r"$d_F$")
-    ax.set_title(rf"E. $B_\mu / B_\mu^{{\rm crit}}$ heatmap  ($\kappa_\mu = {CAL_KAPPA}$)")
+    ax.set_title("E.")
 
-    # Panel F: (kappa, d_F) at B_mu = 0.22
-    Z_F = np.empty((len(d_F_h), len(kappa_h)))
-    for i, d in enumerate(d_F_h):
-        for j, k in enumerate(kappa_h):
-            bc = B_crit(CAL_SIGMA, k, H_mu, d, CAL_N)
-            Z_F[i, j] = CAL_BMU / bc if not np.isnan(bc) else np.nan
+    # Panel F: (B_mu, N) at kappa = 1.8, d_F = 3
+    Z_F = np.empty((len(N_h), len(B_h)))
+    for i, n in enumerate(N_h):
+        bc = B_crit(CAL_SIGMA, CAL_KAPPA, H_mu, CAL_DF, n)
+        Z_F[i, :] = B_h / bc if not np.isnan(bc) else np.nan
     ax = axes[1, 2]
     im = ax.imshow(Z_F, origin="lower", aspect="auto", cmap=cmap, norm=norm,
-                   extent=[kappa_h[0], kappa_h[-1], d_F_h[0], d_F_h[-1]])
-    cs = ax.contour(kappa_h, d_F_h, Z_F, levels=[1.0], colors="black", linewidths=1.3)
+                   extent=[B_h[0], B_h[-1], N_h[0], N_h[-1]])
+    cs = ax.contour(B_h, N_h, Z_F, levels=[1.0], colors="black", linewidths=1.3)
     try:
         ax.clabel(cs, fmt={1.0: r"$B_\mu/B^{\rm crit}_\mu = 1$"},
-                  fontsize=9, inline=True)
+                  fontsize=12, inline=True)
     except Exception:
         pass
-    ax.scatter([CAL_KAPPA], [CAL_DF], marker="o", s=120,
+    ax.scatter([CAL_BMU], [CAL_N], marker="o", s=120,
                facecolor="gold", edgecolor="black", linewidth=1.0, zorder=10)
-    ax.text(CAL_KAPPA + 0.15, CAL_DF - 0.4, "calibrated 5-FU", fontsize=8.5,
+    ax.text(CAL_BMU + 0.07, CAL_N - 1.5, "calibrated 5-FU", fontsize=12,
             bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
                       edgecolor="lightgrey", alpha=0.9))
-    ax.set_xlabel(r"$\kappa_\mu$")
-    ax.set_ylabel(r"$d_F$")
-    ax.set_title(rf"F. $B_\mu / B_\mu^{{\rm crit}}$ heatmap  ($B_\mu = {CAL_BMU}$)")
+    ax.set_xlabel(r"$B_\mu$")
+    ax.set_ylabel(r"$N$")
+    ax.set_title("F.")
 
-    fig.suptitle(
-        r"Figure: Sensitivity of the model-quality certificate to "
-        r"$\kappa_\mu$, $B_\mu$ and $d_F$  (calibrated 5-FU at $\bullet$)",
-        fontsize=12, y=0.995)
-    plt.tight_layout(rect=[0, 0, 0.93, 0.97])
+    plt.tight_layout()
     cbar = fig.colorbar(im, ax=axes[1, :].tolist(), shrink=0.85, aspect=22, pad=0.015)
     cbar.set_label(r"$B_\mu / B^{\rm crit}_\mu$"
-                   "\n($< 1$: data-efficient, $> 1$: baseline)", fontsize=9)
+                   "\n($< 1$: data-efficient, $> 1$: baseline)", fontsize=12)
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {out_path}")
@@ -255,37 +252,13 @@ def make_fig_sensitivity_K(out_path: str = "fig_sensitivity_K.pdf") -> None:
     """Sensitivity to K (number of arms) at the calibrated 5-FU operating
     point (B_mu = 0.22, sigma = 0.40, kappa_mu = 1.8, d_F = 3, N = 12).
 
-    Two panels, each answering one decision-relevant question:
-      A.  Does the calibrated B_mu sit in the data-efficient regime across K?
-          Shows B_crit(N=12) vs K and the calibrated B_mu = 0.22 reference;
-          the shaded band is where B_mu < B_crit (Theorem 3 data-efficient).
-      B.  How many cycles does the model save asymptotically?
-          Shows rho = H(mu)/H_mech vs K (Eq. 7), with rho = 1 = no benefit.
-    Calibrated K = 8 marked with a gold dot on both panels."""
+    Shows rho = H(mu)/H_mech vs K (Eq. 7), with rho = 1 = no benefit.
+    Calibrated K = 8 marked with a gold dot."""
+    plt.rcParams['font.size'] = 10
     K_grid = np.arange(2, 21)
-    fig, axes = plt.subplots(1, 2, figsize=(9, 3.6))
-
-    # -- Panel A: phase-transition threshold vs K -----------------------------
-    ax = axes[0]
-    Bc = np.array([B_crit(CAL_SIGMA, CAL_KAPPA, np.log(K), CAL_DF, CAL_N)
-                   for K in K_grid])
-    ax.fill_between(K_grid, 0, Bc, color="C2", alpha=0.10,
-                    label=r"data-efficient ($B_\mu < B_\mu^{\rm crit}$)")
-    ax.plot(K_grid, Bc, color="C1", lw=2,
-            label=rf"$B_\mu^{{\rm crit}}(N = {CAL_N})$")
-    ax.axhline(CAL_BMU, ls=":", color="grey", lw=1.2,
-               label=fr"$B_\mu = {CAL_BMU}$ (calibrated)")
-    ax.plot([CAL_K], [CAL_BMU], marker="o", color="gold", ms=10,
-            mec="black", mew=0.8, zorder=10)
-    ax.set_xlabel(r"$K$  (number of arms)")
-    ax.set_ylabel("Bias")
-    ax.set_title(r"A. Phase-transition threshold vs $K$")
-    ax.legend(loc="upper left", fontsize=8)
-    ax.set_xlim(K_grid[0], K_grid[-1])
-    ax.set_ylim(0, max(Bc.max() * 1.1, 2))
+    fig, ax = plt.subplots(1, 1, figsize=(6, 4))
 
     # -- Panel B: asymptotic regret-ratio rho vs K ---------------------------
-    ax = axes[1]
     eps = 1e-9
     rho = []
     for K in K_grid:
@@ -301,16 +274,11 @@ def make_fig_sensitivity_K(out_path: str = "fig_sensitivity_K.pdf") -> None:
             mec="black", mew=0.8, zorder=10)
     ax.set_xlabel(r"$K$  (number of arms)")
     ax.set_ylabel(r"$\rho = H(\mu)/H_{\rm mech}$   (asymptotic samples saved)")
-    ax.set_title(r"B. Asymptotic regret-ratio $\rho$ vs $K$")
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.92)
+    ax.legend(loc="upper right", fontsize=10, framealpha=0.92)
     ax.set_xlim(K_grid[0], K_grid[-1])
     ax.set_ylim(0.95, 2.0)
 
-    fig.suptitle(
-        rf"Figure: Sensitivity to $K$  ($B_\mu = {CAL_BMU}$, $\sigma = {CAL_SIGMA}$, "
-        rf"$\kappa_\mu = {CAL_KAPPA}$, $d_F = {CAL_DF}$, $N = {CAL_N}$)",
-        fontsize=11, y=1.00)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout()
     fig.savefig(out_path, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved {out_path}")
