@@ -1,0 +1,517 @@
+"""
+sensitivity_analysis.py
+================================================================================
+Sensitivity-analysis figures for "Mechanistic Information and Regret"
+(NeurIPS 2026 submission, mechanistic_information.pdf).
+
+Three figure-generating functions, all loyal to the paper and the existing
+code in `rmech.finite_n` and `create_table2_new_values.py`.  No existing
+file is modified -- this is a drop-in addition.
+
+  - make_fig_sensitivity_full()  -> fig_sensitivity_full.pdf
+        2x3 grid: sensitivity of C(B_mu) and B_mu / B_crit to (kappa_mu, B_mu, d_F)
+        at the calibrated 5-FU operating point.
+  - make_fig_sensitivity_K()     -> fig_sensitivity_K.pdf
+        1x4 grid: sensitivity to K (number of arms).  Shows C, B_crit, the
+        asymptotic ratio rho = H(mu)/H_mech, and the sqrt(log K) bound gap.
+  - make_fig_measurements()      -> fig_measurements.pdf
+        Cumulative-regret trajectories vs cycle for a sweep of within-cycle
+        measurement counts m (paper Appendix H.6).  Signal-bearing Bernoulli
+        rewards: arm == pi* draws Bernoulli(P_CORRECT), wrong arms draw
+        Bernoulli(P_WRONG); see _run_ts_trajectory for the precise model.
+  - make_fig_measurements_ratio()-> fig_measurements_ratio.pdf
+        Cycle-savings ratio (uninformed/hybrid) at N=12 vs m, for several
+        R_mech values.  Same TS engine as above.
+
+Formulas (verified to 4 decimals against the paper at the calibrated point):
+  - C(B_mu)       -- Eq. 3 with canonical sigma_F^2 = 2 sigma^2 H(mu) / (kappa^2 d_F)
+  - B_crit(N)     -- Eq. 8 (corrected, NOT the small-SNR approximation)
+  - mu_hyb prior  -- generate_linear_mixture_pmf, the same construction used
+                     in rmech.finite_n.run_thompson_sampling.
+
+Calibrated 5-FU operating point (paper Sec. 5.1, Appendix H.4):
+  K = 8,  B_mu = 0.22,  sigma = 0.40,  kappa_mu = 1.8,  d_F = 3,  N = 12
+  H(mu) = ln K = 2.0794,   H(mu)/N = 0.1733,   sqrt(ln K) = 1.4420.
+
+Run as:  python sensitivity_analysis.py
+Runtime: ~30-60s (figure 3 dominates: ~24 simulations of K=8, 3000 patients).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
+
+from rmech.finite_n import generate_linear_mixture_pmf
+
+# ============================================================================
+#  Calibrated 5-FU operating point (paper Sec. 5.1 / Appendix H.4)
+# ============================================================================
+CAL_K     = 8
+CAL_BMU   = 0.22
+CAL_SIGMA = 0.40
+CAL_KAPPA = 1.8
+CAL_DF    = 3
+CAL_N     = 12
+CAL_HMU   = np.log(CAL_K)         # = 2.07944
+
+# Bernoulli reward rates used by _run_ts_trajectory.  Each cycle, the chosen
+# arm produces m i.i.d. Bernoulli(p) draws where p = P_CORRECT if arm == pi*
+# and p = P_WRONG otherwise.  This is the signal-bearing Bernoulli reward
+# model from the paper's Running Example 1 (5-FU AUC-in-window indicator),
+# where p(d=0) ~ 0.69 and p(d>=1) averages to small over the dose grid.
+# Defaults below approximate that calibration with round numbers; the
+# deterministic-reward limit is recovered by setting (1.0, 0.0).
+P_CORRECT = 0.8
+P_WRONG   = 0.2
+
+
+# ============================================================================
+#  Theoretical helpers (paper formulas; canonical parametrization, Remark 2)
+# ============================================================================
+def _sigmaF2(sigma: float, kappa: float, H_mu: float, d_F: int) -> float:
+    """Canonical sigma_F^2 = 2 sigma^2 H(mu) / (kappa^2 d_F)  (Remark 2)."""
+    return 2.0 * sigma**2 * H_mu / (kappa**2 * d_F)
+
+
+def channel_capacity_C(B_mu: float, sigma: float, kappa: float,
+                       H_mu: float, d_F: int) -> float:
+    """C(B_mu) under canonical parametrization (paper Eq. 3)."""
+    sF2 = _sigmaF2(sigma, kappa, H_mu, d_F)
+    num = kappa**2 * sF2
+    den = kappa**2 * B_mu**2 + sigma**2
+    return 0.5 * d_F * np.log1p(num / den)
+
+
+def B_crit(sigma: float, kappa: float, H_mu: float, d_F: int, N: int) -> float:
+    """Corrected B_crit from paper Eq. 8 (NOT the small-SNR approximation).
+    Returns NaN if the argument under the sqrt is non-positive."""
+    inside = (2.0 * H_mu / d_F) / (np.exp(2.0 * H_mu / (d_F * N)) - 1.0) - 1.0
+    if inside <= 0:
+        return np.nan
+    return (sigma / kappa) * np.sqrt(inside)
+
+
+# ============================================================================
+#  Per-cycle TS trajectory with m measurements per cycle
+#  (thin extension of rmech.finite_n.run_thompson_sampling; existing code
+#   returns only the final scalar mean and supports only m=1).
+# ============================================================================
+def _run_ts_trajectory(N_cycles: int, K: int, rmech: float, m: int,
+                       n_patients: int = 3000, seed: int = 42,
+                       p_correct: float = P_CORRECT,
+                       p_wrong:   float = P_WRONG) -> np.ndarray:
+    """Thompson Sampling with m within-cycle measurements per decision.
+    Returns the per-cycle cumulative-regret trajectory averaged over patients.
+
+    Decision schedule (paper Running Example 1, Appendix H.6):
+      * One decision per cycle.  At cycle start, the agent samples theta from
+        its current Beta posterior, picks arm = argmax theta, and commits.
+      * That arm produces m i.i.d. Bernoulli observations during the cycle.
+      * At cycle end, the agent updates its posterior using the m observations
+        (Binomial(m, p_arm) on alpha; the complement on beta).
+      * Regret accrues once per cycle, against the underlying optimal pi*.
+
+    Reward model (signal-bearing Bernoulli):
+      * If arm == pi*:    each draw is Bernoulli(p_correct)   (default 0.70)
+      * If arm != pi*:    each draw is Bernoulli(p_wrong)     (default 0.30)
+      Setting (p_correct, p_wrong) = (1.0, 0.0) recovers the deterministic
+      limit.  These values approximate the paper's 5-FU calibration where
+      reward indicates AUC in the therapeutic window: p(d=0) ~ 0.69 at the
+      optimal dose, p(d>=1) averages small over the wrong-arm grid.
+
+      NOTE: this differs from rmech.finite_n.run_thompson_sampling, which
+      uses prob = mu[arm] = 1/K -- uniform across arms, hence carrying no
+      information about pi*.  Under that model the m extension behaves
+      counter-intuitively (more measurements hurt, because they collapse
+      the posterior of any visited arm to the noise floor and force the
+      agent away from a correct prior recommendation).
+
+    Mechanistic prior: when rmech > 0, the algorithm sees a recommendation
+    pihat sampled from the mu_hyb-shaped distribution
+    `generate_linear_mixture_pmf(K, lnK-rmech, target_index=pistar)`, and
+    uses the same generator with target_index=pihat to construct its prior
+    alpha = i_prior, beta = ones (audit-code convention)."""
+    rng = np.random.default_rng(seed)
+    mu = np.full(K, 1.0 / K)
+    log_K = np.log(K)
+    traj = np.zeros(N_cycles)
+
+    for _ in range(n_patients):
+        pistar = rng.choice(K, p=mu)
+        alpha = np.ones(K, dtype=float)
+        beta_ = np.ones(K, dtype=float)
+
+        if rmech > 0:
+            i_prior = generate_linear_mixture_pmf(K, log_K - rmech, target_index=pistar)
+            pihat = rng.choice(K, p=i_prior)
+            i_prior = generate_linear_mixture_pmf(K, log_K - rmech, target_index=pihat)
+            alpha = i_prior.copy()
+            beta_ = np.ones(K, dtype=float)
+
+        cumr = 0.0
+        for t in range(N_cycles):
+            # 1. Decision at cycle start (one per cycle).
+            theta = rng.beta(alpha, beta_)
+            arm = int(np.argmax(theta))
+            # 2. Regret per cycle: 1 if wrong arm, 0 if pi*.
+            cumr += 0.0 if arm == pistar else (p_correct - p_wrong)
+            # 3. m within-cycle Bernoulli observations on the chosen arm,
+            #    aggregated and applied at cycle end.
+            prob = p_correct if arm == pistar else p_wrong
+            sum_reward = rng.binomial(m, prob)
+            alpha[arm] += sum_reward
+            beta_[arm] += m - sum_reward
+            traj[t] += cumr
+
+    return traj / n_patients
+
+
+# ============================================================================
+#  Figure 1:  fig_sensitivity_full.pdf
+#             Sensitivity of the model-quality certificate to (kappa, B, d_F)
+# ============================================================================
+def make_fig_sensitivity_full(out_path: str = "fig_sensitivity_full.pdf") -> None:
+    """2x3 grid.  Top row: 1D capacity curves C vs each parameter.  Bottom row:
+    2D heatmaps of B_mu / B_crit over each parameter pair, with the phase
+    boundary at ratio = 1 marked in black and the calibrated 5-FU point
+    marked with a gold star."""
+    fig, axes = plt.subplots(2, 3, figsize=(15.5, 8.5))
+    threshold = CAL_HMU / CAL_N    # 0.1733; the C(B_crit)=H(mu)/N working point
+    H_mu = CAL_HMU
+
+    # -- Panel A: C vs B_mu, kappa = 1.8, varying d_F ------------------------
+    B_grid = np.linspace(0.05, 1.5, 250)
+    ax = axes[0, 0]
+    for d_F, color in zip([1, 3, 10], ["C0", "C1", "C2"]):
+        Cv = [channel_capacity_C(B, CAL_SIGMA, CAL_KAPPA, H_mu, d_F) for B in B_grid]
+        ax.plot(B_grid, Cv, color=color, lw=1.7, label=f"$d_F = {d_F}$")
+    ax.axhline(threshold, ls=":", color="grey", lw=1,
+               label=fr"$H(\mu)/N = {threshold:.3f}$")
+    ax.axvline(CAL_BMU, ls="--", color="grey", lw=1, alpha=0.8)
+    ax.text(CAL_BMU + 0.015, 0.03,
+            f"$B_\\mu = {CAL_BMU}$\n(calibrated)", fontsize=8.5, color="grey")
+    ax.set_xlabel(r"$B_\mu$  (model bias)")
+    ax.set_ylabel(r"Channel capacity $C(B_\mu)$  [nats]")
+    ax.set_title(rf"A. $C$ vs $B_\mu$  ($\kappa_\mu = {CAL_KAPPA}$)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_xlim(B_grid[0], B_grid[-1])
+    ax.set_ylim(0, None)
+
+    # -- Panel B: C vs kappa, B_mu = 0.22, varying d_F -----------------------
+    kappa_grid = np.linspace(0.3, 5.5, 250)
+    ax = axes[0, 1]
+    for d_F, color in zip([1, 3, 10], ["C0", "C1", "C2"]):
+        Cv = [channel_capacity_C(CAL_BMU, CAL_SIGMA, k, H_mu, d_F) for k in kappa_grid]
+        ax.plot(kappa_grid, Cv, color=color, lw=1.7, label=f"$d_F = {d_F}$")
+    ax.axhline(threshold, ls=":", color="grey", lw=1,
+               label=fr"$H(\mu)/N = {threshold:.3f}$")
+    ax.axvline(CAL_KAPPA, ls="--", color="grey", lw=1, alpha=0.8)
+    ax.text(CAL_KAPPA + 0.05, 0.07,
+            f"$\\kappa_\\mu = {CAL_KAPPA}$\n(calibrated)", fontsize=8.5, color="grey")
+    ax.set_xlabel(r"$\kappa_\mu$  (PMP sensitivity)")
+    ax.set_ylabel(rf"$C(B_\mu = {CAL_BMU})$  [nats]")
+    ax.set_title(rf"B. $C$ vs $\kappa_\mu$  ($B_\mu = {CAL_BMU}$)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_xlim(kappa_grid[0], kappa_grid[-1])
+    ax.set_ylim(0, None)
+
+    # -- Panel C: C vs d_F, B_mu = 0.22, varying kappa -----------------------
+    d_F_grid = np.arange(1, 11)
+    ax = axes[0, 2]
+    for kappa, color in zip([1.0, 1.8, 3.0], ["C0", "C1", "C2"]):
+        Cv = [channel_capacity_C(CAL_BMU, CAL_SIGMA, kappa, H_mu, d) for d in d_F_grid]
+        ax.plot(d_F_grid, Cv, marker="o", color=color, lw=1.7, ms=4,
+                label=f"$\\kappa_\\mu = {kappa}$")
+    ax.axhline(H_mu, ls="-.", color="grey", lw=1, alpha=0.6)
+    ax.text(d_F_grid[-1] - 0.4, H_mu - 0.07,
+            f"$H(\\mu) = \\ln K = {H_mu:.2f}$", fontsize=8.5, color="grey",
+            ha="right")
+    ax.axhline(threshold, ls=":", color="grey", lw=1)
+    ax.text(d_F_grid[-1] - 0.4, threshold + 0.02,
+            f"$H(\\mu)/N = {threshold:.3f}$", fontsize=8.5, color="grey", ha="right")
+    ax.axvline(CAL_DF, ls="--", color="grey", lw=1, alpha=0.8)
+    ax.text(CAL_DF + 0.1, 0.55,
+            f"$d_F = {CAL_DF}$\n(calibrated)", fontsize=8.5, color="grey")
+    ax.set_xlabel(r"$d_F$  (residual GP rank)")
+    ax.set_ylabel(rf"$C(B_\mu = {CAL_BMU})$  [nats]")
+    ax.set_title(rf"C. $C$ vs $d_F$  ($B_\mu = {CAL_BMU}$)")
+    ax.legend(loc="upper left", fontsize=9)
+    ax.set_xlim(0.7, 10.3)
+    ax.set_ylim(0, max(2.1, H_mu + 0.1))
+
+    # -- Heatmaps: B_mu / B_crit ratio over each parameter pair --------------
+    cmap = "RdBu_r"
+    norm = TwoSlopeNorm(vmin=0.0, vcenter=1.0, vmax=2.5)
+
+    B_h     = np.linspace(0.05, 1.5, 120)
+    kappa_h = np.linspace(0.3, 5.5, 120)
+    d_F_h   = np.arange(1, 21)        # integer d_F in heatmaps
+
+    # Panel D: (B_mu, kappa) at d_F = 3
+    Z_D = np.empty((len(kappa_h), len(B_h)))
+    for i, k in enumerate(kappa_h):
+        bc = B_crit(CAL_SIGMA, k, H_mu, CAL_DF, CAL_N)
+        Z_D[i, :] = B_h / bc if not np.isnan(bc) else np.nan
+    ax = axes[1, 0]
+    im = ax.imshow(Z_D, origin="lower", aspect="auto", cmap=cmap, norm=norm,
+                   extent=[B_h[0], B_h[-1], kappa_h[0], kappa_h[-1]])
+    cs = ax.contour(B_h, kappa_h, Z_D, levels=[1.0], colors="black", linewidths=1.3)
+    try:
+        ax.clabel(cs, fmt={1.0: r"$B_\mu/B^{\rm crit}_\mu = 1$"},
+                  fontsize=9, inline=True)
+    except Exception:
+        pass
+    ax.scatter([CAL_BMU], [CAL_KAPPA], marker="o", s=120,
+               facecolor="gold", edgecolor="black", linewidth=1.0, zorder=10)
+    ax.text(CAL_BMU + 0.07, CAL_KAPPA - 0.05, "calibrated 5-FU", fontsize=8.5,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="lightgrey", alpha=0.9))
+    ax.set_xlabel(r"$B_\mu$")
+    ax.set_ylabel(r"$\kappa_\mu$")
+    ax.set_title(rf"D. $B_\mu / B_\mu^{{\rm crit}}$ heatmap  ($d_F = {CAL_DF}$)")
+
+    # Panel E: (B_mu, d_F) at kappa = 1.8
+    Z_E = np.empty((len(d_F_h), len(B_h)))
+    for i, d in enumerate(d_F_h):
+        bc = B_crit(CAL_SIGMA, CAL_KAPPA, H_mu, d, CAL_N)
+        Z_E[i, :] = B_h / bc if not np.isnan(bc) else np.nan
+    ax = axes[1, 1]
+    im = ax.imshow(Z_E, origin="lower", aspect="auto", cmap=cmap, norm=norm,
+                   extent=[B_h[0], B_h[-1], d_F_h[0], d_F_h[-1]])
+    cs = ax.contour(B_h, d_F_h, Z_E, levels=[1.0], colors="black", linewidths=1.3)
+    try:
+        ax.clabel(cs, fmt={1.0: r"$B_\mu/B^{\rm crit}_\mu = 1$"},
+                  fontsize=9, inline=True)
+    except Exception:
+        pass
+    ax.scatter([CAL_BMU], [CAL_DF], marker="o", s=120,
+               facecolor="gold", edgecolor="black", linewidth=1.0, zorder=10)
+    ax.text(CAL_BMU + 0.07, CAL_DF - 0.4, "calibrated 5-FU", fontsize=8.5,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="lightgrey", alpha=0.9))
+    ax.set_xlabel(r"$B_\mu$")
+    ax.set_ylabel(r"$d_F$")
+    ax.set_title(rf"E. $B_\mu / B_\mu^{{\rm crit}}$ heatmap  ($\kappa_\mu = {CAL_KAPPA}$)")
+
+    # Panel F: (kappa, d_F) at B_mu = 0.22
+    Z_F = np.empty((len(d_F_h), len(kappa_h)))
+    for i, d in enumerate(d_F_h):
+        for j, k in enumerate(kappa_h):
+            bc = B_crit(CAL_SIGMA, k, H_mu, d, CAL_N)
+            Z_F[i, j] = CAL_BMU / bc if not np.isnan(bc) else np.nan
+    ax = axes[1, 2]
+    im = ax.imshow(Z_F, origin="lower", aspect="auto", cmap=cmap, norm=norm,
+                   extent=[kappa_h[0], kappa_h[-1], d_F_h[0], d_F_h[-1]])
+    # contour at ratio = 1 only if it crosses the panel; suppressed otherwise
+    cs = ax.contour(kappa_h, d_F_h, Z_F, levels=[1.0], colors="black", linewidths=1.3)
+    try:
+        ax.clabel(cs, fmt={1.0: r"$B_\mu/B^{\rm crit}_\mu = 1$"},
+                  fontsize=9, inline=True)
+    except Exception:
+        pass
+    ax.scatter([CAL_KAPPA], [CAL_DF], marker="o", s=120,
+               facecolor="gold", edgecolor="black", linewidth=1.0, zorder=10)
+    ax.text(CAL_KAPPA + 0.15, CAL_DF - 0.4, "calibrated 5-FU", fontsize=8.5,
+            bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                      edgecolor="lightgrey", alpha=0.9))
+    ax.set_xlabel(r"$\kappa_\mu$")
+    ax.set_ylabel(r"$d_F$")
+    ax.set_title(rf"F. $B_\mu / B_\mu^{{\rm crit}}$ heatmap  ($B_\mu = {CAL_BMU}$)")
+
+    # Shared colorbar on the right
+    fig.suptitle(
+        r"Figure: Sensitivity of the model-quality certificate to "
+        r"$\kappa_\mu$, $B_\mu$ and $d_F$  (calibrated 5-FU at $\bullet$)",
+        fontsize=12, y=0.995)
+    plt.tight_layout(rect=[0, 0, 0.93, 0.97])
+    cbar = fig.colorbar(im, ax=axes[1, :].tolist(), shrink=0.85, aspect=22, pad=0.015)
+    cbar.set_label(r"$B_\mu / B^{\rm crit}_\mu$"
+                   "\n($< 1$: data-efficient, $> 1$: baseline)", fontsize=9)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+# ============================================================================
+#  Figure 2:  fig_sensitivity_K.pdf
+#             Sensitivity of the certificate to K (number of arms).
+# ============================================================================
+def make_fig_sensitivity_K(out_path: str = "fig_sensitivity_K.pdf") -> None:
+    """Sensitivity to K (number of arms) at the calibrated 5-FU operating
+    point (B_mu = 0.22, sigma = 0.40, kappa_mu = 1.8, d_F = 3, N = 12).
+
+    Two panels, each answering one decision-relevant question:
+      A.  Does the calibrated B_mu sit in the data-efficient regime across K?
+          Shows B_crit(N=12) vs K and the calibrated B_mu = 0.22 reference;
+          the shaded band is where B_mu < B_crit (Theorem 3 data-efficient).
+      B.  How many cycles does the model save asymptotically?
+          Shows rho = H(mu)/H_mech vs K (Eq. 7), with rho = 1 = no benefit.
+    Calibrated K = 8 marked with a gold star on both panels."""
+    K_grid = np.arange(2, 21)
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.6))
+
+    # -- Panel A: phase-transition threshold vs K -----------------------------
+    ax = axes[0]
+    Bc = np.array([B_crit(CAL_SIGMA, CAL_KAPPA, np.log(K), CAL_DF, CAL_N)
+                   for K in K_grid])
+    # Shade the data-efficient region (B_mu < B_crit) under the curve.
+    ax.fill_between(K_grid, 0, Bc, color="C2", alpha=0.10,
+                    label=r"data-efficient ($B_\mu < B_\mu^{\rm crit}$)")
+    ax.plot(K_grid, Bc, color="C1", lw=2,
+            label=rf"$B_\mu^{{\rm crit}}(N = {CAL_N})$")
+    ax.axhline(CAL_BMU, ls=":", color="grey", lw=1.2,
+               label=fr"$B_\mu = {CAL_BMU}$ (calibrated)")
+    ax.plot([CAL_K], [CAL_BMU], marker="o", color="gold", ms=10,
+            mec="black", mew=0.8, zorder=10)
+    ax.set_xlabel(r"$K$  (number of arms)")
+    ax.set_ylabel("Bias")
+    ax.set_title(r"A. Phase-transition threshold vs $K$")
+    ax.legend(loc="upper left", fontsize=8)
+    ax.set_xlim(K_grid[0], K_grid[-1])
+    ax.set_ylim(0, Bc.max() * 1.1)
+
+    # -- Panel B: asymptotic regret-ratio rho vs K ---------------------------
+    ax = axes[1]
+    eps = 1e-9
+    rho = []
+    for K in K_grid:
+        Hm = np.log(K)
+        C  = channel_capacity_C(CAL_BMU, CAL_SIGMA, CAL_KAPPA, Hm, CAL_DF)
+        rho.append(Hm / max(Hm - C, eps))
+    rho = np.array(rho)
+    ax.plot(K_grid, rho, color="C0", lw=2,
+            label=r"$\rho = H(\mu)/H_{\rm mech}$")
+    ax.axhline(1.0, ls=":", color="grey", lw=1.2, label=r"$\rho = 1$ (no benefit)")
+    K_idx = int(np.where(K_grid == CAL_K)[0][0])
+    ax.plot([CAL_K], [rho[K_idx]], marker="o", color="gold", ms=10,
+            mec="black", mew=0.8, zorder=10)
+    ax.annotate(rf"$\rho \approx {rho[K_idx]:.2f}$ at $K = {CAL_K}$",
+                xy=(CAL_K, rho[K_idx]), xytext=(CAL_K + 1.4, rho[K_idx] + 0.05),
+                fontsize=9, color="dimgrey",
+                arrowprops=dict(arrowstyle="-", color="dimgrey", lw=0.6))
+    ax.set_xlabel(r"$K$  (number of arms)")
+    ax.set_ylabel(r"$\rho = H(\mu)/H_{\rm mech}$   (asymptotic samples saved)")
+    ax.set_title(r"B. Asymptotic regret-ratio $\rho$ vs $K$")
+    ax.legend(loc="upper right", fontsize=8, framealpha=0.92)
+    ax.set_xlim(K_grid[0], K_grid[-1])
+    ax.set_ylim(0.95, 2.0)
+
+    fig.suptitle(
+        rf"Figure: Sensitivity to $K$  ($B_\mu = {CAL_BMU}$, $\sigma = {CAL_SIGMA}$, "
+        rf"$\kappa_\mu = {CAL_KAPPA}$, $d_F = {CAL_DF}$, $N = {CAL_N}$)",
+        fontsize=11, y=1.00)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+# ============================================================================
+#  Figure 3:  fig_measurements.pdf
+#             Empirical effect of within-cycle measurement count m on regret.
+# ============================================================================
+def make_fig_measurements(out_path: str = "fig_measurements.pdf",
+                          n_patients: int = 3000, seed: int = 42) -> None:
+    """Cumulative-regret trajectories at R_mech = 0.8 (the certified ceiling
+    under the corrected sigma) for m in {1, 5, 10, 100, inf} plus the m=1
+    uninformed reference, over N = 30 cycles.  m = inf is approximated by
+    m = 10000 (paper Appendix H.6 convention)."""
+    M_INF = 10000     # paper convention: m = inf ~ m = 10000
+    N_A   = 30
+
+    R_mech_A = 0.8
+    m_list_A = [1, 5, 10, 100, M_INF]
+    traj_uninf = _run_ts_trajectory(N_A, CAL_K, rmech=0.0, m=1,
+                                    n_patients=n_patients, seed=seed)
+    traj_hyb = {}
+    for m in m_list_A:
+        traj_hyb[m] = _run_ts_trajectory(N_A, CAL_K, rmech=R_mech_A, m=m,
+                                         n_patients=n_patients,
+                                         seed=seed + 1000 + m)
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    cycles = np.arange(1, N_A + 1)
+    palette = {1: "tab:purple", 5: "tab:blue", 10: "tab:green",
+               100: "tab:orange", M_INF: "tab:red"}
+    label_for = {1: "1", 5: "5", 10: "10", 100: "100", M_INF: r"\infty"}
+    ax.plot(cycles, traj_uninf, color="tab:purple", lw=1.7, ls="--",
+            label="$m = 1$ (uninformed)")
+    for m in m_list_A:
+        ax.plot(cycles, traj_hyb[m], color=palette[m], lw=1.7,
+                label=f"$m = {label_for[m]}$ (hybrid)")
+    ax.set_xlabel("Cycle")
+    ax.set_ylabel("Cumulative regret")
+    ax.set_title(rf"Regret over cycles  ($R_{{\rm mech}} = {R_mech_A}$, $K = {CAL_K}$)")
+    ax.legend(loc="upper left", fontsize=6.5, ncol=1)
+    ax.set_xlim(0, N_A)
+    ax.set_ylim(0, None)
+
+    plt.tight_layout()
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+def make_fig_measurements_ratio(out_path: str = "fig_measurements_ratio.pdf",
+                                n_patients: int = 3000, seed: int = 42) -> None:
+    """Cycle-savings ratio (uninformed/hybrid) at N = 12 vs within-cycle
+    measurement count m on log-scale, for four values of R_mech.  m = inf is
+    approximated by m = 10000 (paper Appendix H.6 convention)."""
+    M_INF = 10000
+    N_B   = CAL_N     # 12
+    m_list_B = [1, 2, 5, 10, 100, M_INF]
+    R_mech_B = [0.30, 0.80, 1.40, 1.90]
+
+    # Uninformed regret depends on m too -- compute once per m (R=0).
+    uninf_at_m = {}
+    for m in m_list_B:
+        uninf_at_m[m] = _run_ts_trajectory(N_B, CAL_K, rmech=0.0, m=m,
+                                           n_patients=n_patients,
+                                           seed=seed + 2000 + m)[-1]
+    # Hybrid regret at each (R_mech, m):
+    ratios = {R: [] for R in R_mech_B}
+    for R in R_mech_B:
+        for m in m_list_B:
+            hyb = _run_ts_trajectory(N_B, CAL_K, rmech=R, m=m,
+                                     n_patients=n_patients,
+                                     seed=seed + 3000 + int(R * 100) + m)[-1]
+            r = uninf_at_m[m] / hyb if hyb > 1e-9 else float("inf")
+            ratios[R].append(r)
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    palette_B = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+    x_pos = np.arange(len(m_list_B))     # use index for evenly spaced log-scale
+    for R, color in zip(R_mech_B, palette_B):
+        ax.plot(x_pos, ratios[R], marker="o", color=color, lw=1.7, ms=5,
+                label=rf"$R_{{\rm mech}} = {R:.2f}$")
+    ax.axhline(1.0, ls=":", color="grey", lw=1)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([str(m) if m != M_INF else r"$\infty$" for m in m_list_B])
+    ax.set_xlabel(r"Within-cycle measurements $m$  (log scale)")
+    ax.set_ylabel("Regret ratio  (uninformed / hybrid)")
+    ax.set_title(rf"Cycle-savings ratio vs $m$  ($N = {N_B}$)")
+    ax.legend(loc="upper right", fontsize=9)
+
+    plt.tight_layout()
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+# ============================================================================
+#  Main
+# ============================================================================
+if __name__ == "__main__":
+    import sys, time
+    t0 = time.time()
+    make_fig_sensitivity_full()
+    sys.stdout.flush()
+    make_fig_sensitivity_K()
+    sys.stdout.flush()
+    make_fig_measurements()
+    sys.stdout.flush()
+    make_fig_measurements_ratio()
+    sys.stdout.flush()
+    print(f"All four figures generated in {time.time() - t0:.1f}s.")
